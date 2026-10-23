@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0d1014" />
-    <title>Карантин: Нью-Йорк</title>
+    <title>Zombie Fuckers</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Russo+One&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" />
     <style>
       :root {
         --bg: #0d1014;
@@ -17,12 +20,18 @@
         --blue: #5fb4ff;
         --danger: #ff5a4f;
         --gold: #ffc94a;
+        --display: 'Russo One', 'Arial Black', system-ui, sans-serif;
+        --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        --mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+        color-scheme: dark;
       }
       * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
-        font: 14px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; user-select: none; -webkit-user-select: none; }
+        font: 14px/1.4 var(--body); user-select: none; -webkit-user-select: none; }
       button { font: inherit; color: inherit; cursor: pointer; }
+      button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
       .num { font-variant-numeric: tabular-nums; }
+      .budget, .counts .num, .tool .cost { font-family: var(--mono); }
       .hidden { display: none !important; }
 
       #game { position: fixed; inset: 0; }
@@ -30,7 +39,7 @@
       #top { touch-action: none; }
 
       .hud-top { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 8px; align-items: flex-start;
-        padding: calc(8px + env(safe-area-inset-top)) 10px 0; pointer-events: none; }
+        padding-top: calc(8px + env(safe-area-inset-top, 0px)); padding-left: max(10px, env(safe-area-inset-left, 0px)); padding-right: max(10px, env(safe-area-inset-right, 0px)); pointer-events: none; }
       .hud-top > * { pointer-events: auto; }
       .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; backdrop-filter: blur(6px); }
       .icon-btn { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: 38px; height: 38px; display: grid; place-items: center; font-size: 18px; }
@@ -42,7 +51,7 @@
       .counts .chip { padding: 4px 8px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
       .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
-      .hud-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 8px calc(8px + env(safe-area-inset-bottom)); pointer-events: none; }
+      .hud-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); pointer-events: none; }
       .hud-bottom > * { pointer-events: auto; }
       .hint { margin: 0 auto 6px; max-width: 640px; font-size: 12.5px; color: #cfd6e0; text-align: center; padding: 6px 10px; }
       .row { display: flex; gap: 8px; align-items: flex-end; }
@@ -58,21 +67,23 @@
       .speed { display: flex; gap: 4px; }
       .speed button { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; font-size: 13px; }
       .speed button.on { border-color: var(--blue); color: var(--blue); }
-      .go { background: var(--accent); color: #0b1a05; border: 0; border-radius: 12px; padding: 12px 16px; font-weight: 800; font-size: 15px; letter-spacing: .02em; }
+      .go { background: var(--accent); color: #0b1a05; border: 0; border-radius: 12px; padding: 12px 16px; font: 400 16px/1 var(--display); letter-spacing: .04em; }
       .retreat { background: var(--panel); border: 1px solid rgba(255,90,79,.4); color: #ffb3ad; border-radius: 9px; padding: 6px 8px; font-size: 12px; }
       .sel { position: absolute; right: 10px; top: calc(56px + env(safe-area-inset-top)); width: 210px; }
       .sel button { margin-top: 6px; width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px; }
       .attrib { position: absolute; left: 8px; bottom: 2px; font-size: 9.5px; color: rgba(255,255,255,.35); pointer-events: none; }
 
-      .screen { position: fixed; inset: 0; overflow-y: auto; background: radial-gradient(1200px 600px at 70% -10%, #1d2a1a 0%, transparent 60%), var(--bg); padding: calc(20px + env(safe-area-inset-top)) 16px 24px; }
+      .screen { position: fixed; inset: 0; overflow-y: auto; background: radial-gradient(1200px 600px at 70% -10%, #1d2a1a 0%, transparent 60%), var(--bg);
+        padding-block: calc(20px + env(safe-area-inset-top, 0px)) calc(24px + env(safe-area-inset-bottom, 0px));
+        padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
       .wrap { max-width: 760px; margin: 0 auto; }
-      h1 { font-size: 30px; margin: 4px 0 2px; letter-spacing: -.01em; }
+      h1 { font: 400 40px/1 var(--display); margin: 4px 0 6px; letter-spacing: .01em; text-transform: uppercase; text-wrap: balance; }
       h1 span { color: var(--accent); }
       h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 26px 0 10px; }
       .lead { color: #b9c2cf; margin: 6px 0 0; }
       .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 10px; display: flex; gap: 12px; align-items: center; }
       .card .info { flex: 1; min-width: 0; }
-      .card b { font-size: 16px; }
+      .card b { font: 400 17px/1.2 var(--display); letter-spacing: .01em; }
       .card p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
       .card .meta { font-size: 12px; color: #9fb0c4; margin-top: 6px; }
       .stars { color: var(--gold); letter-spacing: 2px; white-space: nowrap; }
@@ -84,7 +95,7 @@
 
       .modal { position: fixed; inset: 0; background: rgba(5,7,10,.72); display: grid; place-items: center; padding: 16px; }
       .modal .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px; padding: 20px; width: min(420px, 100%); }
-      .modal h3 { margin: 0 0 4px; font-size: 22px; }
+      .modal h3 { margin: 0 0 4px; font: 400 24px/1.15 var(--display); text-transform: uppercase; }
       .big-stars { font-size: 34px; margin: 6px 0 10px; }
       .stat { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
       .actions { display: flex; gap: 8px; margin-top: 16px; }

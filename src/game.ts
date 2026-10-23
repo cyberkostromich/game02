@@ -281,8 +281,17 @@ export class Game {
     this.el('btn-retreat').classList.add('hidden');
     this.el('btn-start').onclick = () => this.start();
     this.el('btn-menu').onclick = () => this.onQuit();
-    this.el('btn-retreat').onclick = () => {
-      if (confirm('Отступить? Оставшиеся на улицах мирные будут потеряны.')) this.finish(false);
+    // confirm in place: the second tap within 3 s retreats (no browser dialogs)
+    const retreat = this.el('btn-retreat');
+    retreat.textContent = 'Отступить';
+    retreat.onclick = () => {
+      if (retreat.dataset.armed) return this.finish(false);
+      retreat.dataset.armed = '1';
+      retreat.textContent = 'Точно? Мирные на улицах погибнут';
+      setTimeout(() => {
+        delete retreat.dataset.armed;
+        retreat.textContent = 'Отступить';
+      }, 3000);
     };
     this.el('speed')
       .querySelectorAll('button')

@@ -41,7 +41,8 @@ function showMenu(): void {
       <button class="btn ghost" data-up="${id}" ${canUpgrade(progress, id) ? '' : 'disabled'}>${maxed ? 'Макс.' : `★ ${upgradeCost(progress, id)}`}</button></div>`;
   }).join('');
   m.innerHTML = `<div class="wrap">
-    <h1>Карантин: <span>Нью-Йорк</span></h1>
+    <h1>Zombie <span>Fuckers</span></h1>
+    <div style="color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px">Нью-Йорк · Мидтаун</div>
     <p class="lead">Стратегия сдерживания орды на реальной карте Мидтауна Манхэттена. Изучите очаг, расставьте снайперов, турели, миномёты, баррикады и пункты эвакуации — и спасите как можно больше людей.</p>
     <h2>Миссии</h2>${missions}
     <h2>Усиления · медалей: ${medals(progress)}</h2>
