@@ -5,7 +5,7 @@ test('menu → mission → deploy → outbreak runs without errors', async ({ pa
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 
-  await page.goto('/');
+  await page.goto('./');
   await page.click('[data-play="0"]');
   await expect(page.locator('#stats .title')).toHaveText('Ночь на Таймс-сквер');
 

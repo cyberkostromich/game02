@@ -45,7 +45,7 @@ async function spots(page: Page): Promise<{ bld: Pt; street: Pt; street2: Pt }> 
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto('/?mission=times-square');
+  await page.goto('./?mission=times-square');
   await page.waitForFunction(() => (window as any).__zf);
   await page.evaluate(() => {
     const c = (window as any).__zf.cam;
