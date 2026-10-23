@@ -17,25 +17,59 @@ export const UNIT_COLOR: Record<UnitType, string> = {
   repair: '#f29b4e',
   barracks: '#6aa8ff',
   heli: '#d8e4ff',
+  tank: '#b8c27a',
+  bmp: '#8fbf9a',
 };
 export const ZONE_FILL = 'rgba(126,92,255,0.22)';
 export const ZONE_LINE = 'rgba(150,120,255,0.85)';
 
 const MAX_SPLATS = 6000;
 
+const zoneCache = new WeakMap<World, { v: number; fill: Path2D; edge: Path2D }>();
+
+/** Merged safe zone as row runs (fill) and its outer boundary (edge), cached per change. */
+function zonePaths(w: World): { fill: Path2D; edge: Path2D } {
+  const hit = zoneCache.get(w);
+  if (hit && hit.v === w.zoneVersion) return hit;
+  const g = w.grid;
+  const m = w.zoneMask;
+  const s = g.cell;
+  const fill = new Path2D();
+  const edge = new Path2D();
+  for (let y = 0; y < g.h; y++) {
+    let run = -1;
+    for (let x = 0; x <= g.w; x++) {
+      const on = x < g.w && m[y * g.w + x] === 1;
+      if (on && run < 0) run = x;
+      if (!on && run >= 0) {
+        fill.rect(run * s, y * s, (x - run) * s, s);
+        run = -1;
+      }
+      if (!on) continue;
+      const c = y * g.w + x;
+      if (!m[c - g.w]) { edge.moveTo(x * s, y * s); edge.lineTo((x + 1) * s, y * s); }
+      if (!m[c + g.w]) { edge.moveTo(x * s, (y + 1) * s); edge.lineTo((x + 1) * s, (y + 1) * s); }
+      if (!m[c - 1]) { edge.moveTo(x * s, y * s); edge.lineTo(x * s, (y + 1) * s); }
+      if (!m[c + 1]) { edge.moveTo((x + 1) * s, y * s); edge.lineTo((x + 1) * s, (y + 1) * s); }
+    }
+  }
+  const v = { v: w.zoneVersion, fill, edge };
+  zoneCache.set(w, v);
+  return v;
+}
+
 /** Below the agents: safe zones, spikes, barricades, blood. */
 export function drawGround(ctx: CanvasRenderingContext2D, w: World, cam: Camera, dpr: number): void {
   ctx.setTransform(...cam.matrix(dpr));
   const g = w.grid;
 
-  for (const z of w.zones) {
+  if (w.zoneParts.length) {
+    const z = zonePaths(w);
     ctx.fillStyle = ZONE_FILL;
-    ctx.fillRect(z.x0, z.y0, z.x1 - z.x0, z.y1 - z.y0);
+    ctx.fill(z.fill);
     ctx.strokeStyle = ZONE_LINE;
     ctx.lineWidth = 2 / cam.zoom;
-    ctx.setLineDash([8 / cam.zoom, 5 / cam.zoom]);
-    ctx.strokeRect(z.x0, z.y0, z.x1 - z.x0, z.y1 - z.y0);
-    ctx.setLineDash([]);
+    ctx.stroke(z.edge);
   }
 
   if (w.splats.length > MAX_SPLATS) w.splats.splice(0, w.splats.length - MAX_SPLATS);
@@ -156,6 +190,34 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
       ctx.textBaseline = 'middle';
       ctx.fillText(u.type === 'medic' ? '+' : u.type === 'repair' ? '⚒' : '★', 0, s * 0.05);
       break;
+    case 'tank':
+    case 'bmp': {
+      // hull to scale (min size on screen), turret aims independently
+      const L = Math.max(s * 1.5, (u.type === 'tank' ? 7.5 : 6.8) * cam.zoom);
+      const W = L * (u.type === 'tank' ? 0.5 : 0.44);
+      ctx.save();
+      ctx.rotate(u.dir + cam.angle);
+      ctx.fillStyle = '#20241a';
+      ctx.fillRect(-L / 2, -W / 2 - 1, L, W + 2); // tracks / wheels
+      ctx.fillStyle = col;
+      ctx.fillRect(-L / 2 + 1, -W / 2 + 1, L - 2, W - 2);
+      if (u.type === 'bmp') {
+        ctx.beginPath();
+        ctx.moveTo(L / 2 - 1, -W / 2 + 1);
+        ctx.lineTo(L / 2 + W * 0.25, 0);
+        ctx.lineTo(L / 2 - 1, W / 2 - 1);
+        ctx.fill();
+      }
+      ctx.restore();
+      ctx.rotate(u.aim + cam.angle);
+      ctx.fillStyle = u.type === 'tank' ? '#d7dd9f' : '#c3e3c9';
+      ctx.beginPath();
+      ctx.arc(0, 0, W * (u.type === 'tank' ? 0.38 : 0.28), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillRect(0, -1.5, L * (u.type === 'tank' ? 0.75 : 0.5), 3);
+      break;
+    }
     case 'heli':
       ctx.rotate(u.aim + cam.angle);
       ctx.fillRect(-s * 0.7, -s * 0.18, s * 1.3, s * 0.36);

@@ -1,4 +1,4 @@
-import type { MapData } from '../sim/grid';
+import { forEachWaterRun, type MapData } from '../sim/grid';
 import type { Camera } from './camera';
 
 // Static city map in 2.5D: buildings are extruded by their OSM height with an
@@ -81,6 +81,7 @@ export class MapLayer {
   private sidewalks = new Path2D();
   private shadows = new Map<string, Path2D>(); // chunk -> union of building shadows
   private streetLabels: StreetLabel[] = [];
+  private buckets = new Map<string, Footprint[]>(); // 50 m cells -> footprints touching them
 
   constructor(readonly map: MapData) {
     const s = 1 / map.q;
@@ -104,12 +105,21 @@ export class MapLayer {
       return { pts, h, sign: area > 0 ? 1 : -1, x0, y0, x1, y1, ...tints(i, raw[0]) };
     });
     for (const f of this.foot) this.addFootprint(this.sidewalks, f, 0, 0);
+    for (const f of this.foot)
+      for (let by = Math.floor(f.y0 / 50); by <= Math.floor(f.y1 / 50); by++)
+        for (let bx = Math.floor(f.x0 / 50); bx <= Math.floor(f.x1 / 50); bx++) {
+          const k = `${bx},${by}`;
+          const list = this.buckets.get(k);
+          if (list) list.push(f);
+          else this.buckets.set(k, [f]);
+        }
     for (const f of this.foot) this.addShadow(f);
     for (const p of map.parks) {
       poly(this.parks, p);
       this.plantTrees(p, s);
     }
     for (const p of map.water) poly(this.water, p);
+    forEachWaterRun(map, (x0, x1, y0, y1) => this.water.rect(x0, y0, x1 - x0, y1 - y0 + 0.5));
 
     const longest = new Map<string, StreetLabel & { len: number }>();
     for (const r of map.roads) {
@@ -302,6 +312,36 @@ export class MapLayer {
     ctx.fillRect(-big, H, W + 2 * big, big);
     ctx.fillRect(-big, 0, big, H);
     ctx.fillRect(W, 0, big, H);
+  }
+
+  footprintAt(x: number, y: number): Footprint | null {
+    for (const f of this.buckets.get(`${Math.floor(x / 50)},${Math.floor(y / 50)}`) ?? []) {
+      if (x < f.x0 || x > f.x1 || y < f.y0 || y > f.y1) continue;
+      let c = false;
+      const p = f.pts;
+      for (let k = 0, j = p.length - 2; k < p.length; j = k, k += 2)
+        if (p[k + 1] > y !== p[j + 1] > y && x < ((p[j] - p[k]) * (y - p[k + 1])) / (p[j + 1] - p[k + 1]) + p[k]) c = !c;
+      if (c) return f;
+    }
+    return null;
+  }
+
+  /** Paints the building at (x, y) in a unit's colour, the way the original marks garrisons. */
+  highlight(ctx: CanvasRenderingContext2D, cam: Camera, dpr: number, x: number, y: number, color: string): void {
+    const f = this.footprintAt(x, y);
+    if (!f) return;
+    const p = this.view(cam).paths.get(f)!;
+    ctx.setTransform(...cam.matrix(dpr));
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = color;
+    ctx.fill(p.dark);
+    ctx.fill(p.lit);
+    ctx.globalAlpha = 0.75;
+    ctx.fill(p.roof);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2 / cam.zoom;
+    ctx.stroke(p.roof);
   }
 
   drawLabels(ctx: CanvasRenderingContext2D, cam: Camera, dpr: number): void {

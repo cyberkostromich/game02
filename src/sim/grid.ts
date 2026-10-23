@@ -11,8 +11,32 @@ export interface MapData {
   buildings: number[][]; // [height, x0, y0, x1, y1, ...] in 1/q m
   parks: number[][];
   water: number[][];
+  /** rivers as a run-length mask: alternating land/water runs, row-major */
+  waterMask?: { cell: number; w: number; h: number; rle: number[] };
   roads: { c: number; n: string; p: number[] }[];
   labels: { t: string; x: number; y: number }[];
+}
+
+/** Calls fn(x0, x1, y0, y1) in metres for every horizontal run of river cells. */
+export function forEachWaterRun(map: MapData, fn: (x0: number, x1: number, y0: number, y1: number) => void): void {
+  const m = map.waterMask;
+  if (!m) return;
+  let i = 0;
+  let water = false;
+  for (const len of m.rle) {
+    if (water) {
+      let k = i;
+      const end = i + len;
+      while (k < end) {
+        const y = Math.floor(k / m.w);
+        const rowEnd = Math.min(end, (y + 1) * m.w);
+        fn((k % m.w) * m.cell, ((rowEnd - 1) % m.w + 1) * m.cell, y * m.cell, (y + 1) * m.cell);
+        k = rowEnd;
+      }
+    }
+    i += len;
+    water = !water;
+  }
 }
 
 export const OPEN = 0;
@@ -156,6 +180,10 @@ export class Grid {
     const s = 1 / map.q;
     for (const b of map.buildings) g.fillPolygon(b, BUILDING, 1, s, b[0]);
     for (const p of map.water) g.fillPolygon(p, SOLID, 0, s);
+    forEachWaterRun(map, (x0, x1, y0, y1) => {
+      for (let y = Math.floor(y0 / cell); y < Math.ceil(y1 / cell) && y < g.h; y++)
+        for (let x = Math.floor(x0 / cell); x < Math.ceil(x1 / cell) && x < g.w; x++) g.solid[y * g.w + x] = SOLID;
+    });
     g.sealUnreachable(map.width / 2, map.height / 2);
     return g;
   }

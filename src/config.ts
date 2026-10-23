@@ -3,8 +3,8 @@ export const CFG = {
   sim: {
     hz: 10,
     cell: 4, // walk-grid cell size
-    fieldEvery: 0.7, // prey + zombie fields, recomputed on alternating ticks
-    evacFieldEvery: 1.5,
+    fieldEvery: 1.0, // prey + zombie fields, recomputed on alternating ticks
+    evacFieldEvery: 2,
     hashCell: 8,
   },
   civilian: {
@@ -43,10 +43,13 @@ export const CFG = {
     sniper: { cost: 200, hp: 30, range: 190, reload: 1.8, accuracy: 0.88, magazine: 30 },
     turret: { cost: 300, hp: 240, range: 75, reload: 0.2, accuracy: 0.45, magazine: 300 },
     mortar: { cost: 450, hp: 50, rangeMin: 50, range: 340, reload: 3.2, blast: 12, flight: 1.8, magazine: 14 },
-    garrison: { cost: 400, hp: 600, range: 95, reload: 0.3, accuracy: 0.65, magazine: 300 }, // assault squad in a building
+    garrison: { cost: 150, hp: 320, range: 85, reload: 0.35, accuracy: 0.6, magazine: 240 }, // assault squad: street or building
     mines: { cost: 200, hp: 1, radius: 10, blast: 4, charges: 12, reload: 0.4 },
     evac: { cost: 250, hp: 120, radius: 300, rate: 10, pickup: 12 }, // pickup: m around the point
     heli: { cost: 650, hp: 1, range: 80, reload: 0.08, accuracy: 0.45, speed: 28, duration: 70 },
+    // armour: street only, drives on orders and fights on the move
+    tank: { cost: 900, hp: 1600, range: 120, reload: 2.2, accuracy: 0.85, blast: 7, magazine: 40, mgRange: 60, mgReload: 0.16, mgAccuracy: 0.4 },
+    bmp: { cost: 600, hp: 800, range: 95, reload: 0.25, accuracy: 0.5, magazine: 400, squad: 6, squadCooldown: 45 },
     // building specialisations, only inside a safe zone
     medic: { cost: 300, hp: 300, radius: 30, cureRate: 1, healRadius: 90, healRate: 4 },
     repair: { cost: 250, hp: 300, radius: 110, rate: 12 },
@@ -64,7 +67,8 @@ export const CFG = {
   spikes: { costPerCell: 3, maxCells: 30, slow: 0.4, killRate: 0.25 }, // killRate: chance per second
   levels: { max: 3, costShare: 0.6, rate: 0.5, range: 0.1, hp: 0.4 }, // per level above 1
   // movable units walk the streets at these speeds (m/s); they can't shoot on the march
-  move: { sniper: 3, garrison: 2.6, turret: 1.3, mortar: 1.3, maxPath: 1500 },
+  move: { sniper: 3, garrison: 2.6, turret: 1.3, mortar: 1.3, tank: 4.5, bmp: 7, maxPath: 2500 },
+  armour: { crushRadius: 3.2, bmpArmour: 0.3, tankCivilianRisk: 2 }, // tank won't fire main gun if more civilians in blast
   supply: { breachRadius: 25 }, // a zombie this close to the evac point cuts the supply
   abilities: {
     gas: { cost: 200, cooldown: 25, radius: 30, duration: 10 },

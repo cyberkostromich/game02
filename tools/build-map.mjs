@@ -8,11 +8,13 @@ const dir = process.argv[2];
 const out = process.argv[3] ?? 'public/maps/midtown.json';
 if (!dir) throw new Error('usage: build-map.mjs <tiles-dir> [out.json]');
 
-// Midtown Manhattan, rotated so avenues run vertically (uptown = up).
-const CENTER = { lat: 40.755, lon: -73.984 };
+// Midtown Manhattan river to river (~23rd to ~66th St), rotated so avenues
+// run vertically (uptown = up).
+const CENTER = { lat: 40.7565, lon: -73.979 };
 const ROT_DEG = 29; // Manhattan street grid is ~29° east of true north
-const W = 2000; // crosstown, m
-const H = 2600; // along avenues, m
+const W = 3400; // crosstown, m
+const H = 3600; // along avenues, m
+const WATER_CELL = 8; // m, resolution of the river mask
 const Q = 2; // coordinates are stored as ints in 1/Q m
 
 const nodes = new Map();
@@ -169,6 +171,21 @@ const LANDMARKS = {
   'Macy\'s': 'Macy\'s',
   'Moynihan Train Hall': 'Пенн-стейшн',
   'Pennsylvania Station': 'Пенн-стейшн',
+  'Central Park': 'Центральный парк',
+  'United Nations Headquarters': 'Штаб-квартира ООН',
+  'Columbus Circle': 'Колумбус-серкл',
+  'Carnegie Hall': 'Карнеги-холл',
+  'Jacob K. Javits Convention Center': 'Джавитс-центр',
+  'Vessel': 'Хадсон-Ярдс',
+  'Plaza Hotel': 'Отель «Плаза»',
+  'The Plaza': 'Отель «Плаза»',
+  'Lincoln Center for the Performing Arts': 'Линкольн-центр',
+  'Intrepid Museum': 'Авианосец «Интрепид»',
+  'Intrepid Sea, Air & Space Museum': 'Авианосец «Интрепид»',
+  'Flatiron Building': 'Флэтайрон-билдинг',
+  'Hudson River': 'река Гудзон',
+  'East River': 'Ист-Ривер',
+  'Queensboro Bridge': 'Квинсборо-бридж',
 };
 function centroid(pts) {
   let x = 0, y = 0;
@@ -188,7 +205,9 @@ const best = new Map();
 const consider = (tags, pts) => {
   const ru = LANDMARKS[tags.name];
   if (!ru || !pts.length) return;
-  const [x, y] = centroid(pts);
+  // big areas (Central Park) poke out of the map: label the part that is inside
+  const inside = pts.filter(([px, py]) => px > 40 && py > 40 && px < W - 40 && py < H - 40);
+  const [x, y] = centroid(inside.length >= 3 ? inside : pts);
   if (x < 0 || y < 0 || x > W || y > H) return;
   const score = labelScore(tags);
   const prev = best.get(ru);
@@ -203,6 +222,56 @@ for (const r of rels.values()) {
 for (const n of nodes.values()) if (n.tags?.name) consider(n.tags, [project(n)]);
 for (const [t, v] of best) labels.push({ t, x: Math.round(v.x), y: Math.round(v.y) });
 
+// Rivers: OSM tiles don't carry whole river polygons, so water is every cell
+// reachable from the map edge without touching land (roads, buildings, parks,
+// land use), after growing land by a margin so city blocks stay closed.
+const ww = Math.ceil(W / WATER_CELL);
+const wh = Math.ceil(H / WATER_CELL);
+const land = new Uint8Array(ww * wh);
+const stamp = (x, y, r) => {
+  const cx = Math.floor(x / WATER_CELL), cy = Math.floor(y / WATER_CELL);
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const xx = cx + dx, yy = cy + dy;
+    if (xx >= 0 && yy >= 0 && xx < ww && yy < wh) land[yy * ww + xx] = 1;
+  }
+};
+const strokeLand = (pts, r) => {
+  for (let k = 1; k < pts.length; k++) {
+    const [ax, ay] = pts[k - 1], [bx, by] = pts[k];
+    const n = Math.ceil(Math.hypot(bx - ax, by - ay) / (WATER_CELL / 2)) + 1;
+    for (let t = 0; t <= n; t++) stamp(ax + ((bx - ax) * t) / n, ay + ((by - ay) * t) / n, r);
+  }
+};
+for (const w of ways.values()) {
+  const t = w.tags ?? {};
+  if (t.highway || t.building || t.landuse || t.leisure || t.railway || t.amenity || t['building:part'] || t.man_made === 'pier') {
+    const pts = wayPts(w);
+    if (pts.length && bboxHits(pts, 50)) strokeLand(pts, t.highway === 'motorway' || t.highway === 'trunk' ? 3 : 2);
+  }
+}
+const river = new Uint8Array(ww * wh);
+const stack = [];
+for (let x = 0; x < ww; x++) stack.push(x, (wh - 1) * ww + x);
+for (let y = 0; y < wh; y++) stack.push(y * ww, y * ww + ww - 1);
+while (stack.length) {
+  const c = stack.pop();
+  if (river[c] || land[c]) continue;
+  river[c] = 1;
+  const x = c % ww, y = (c / ww) | 0;
+  if (x > 0) stack.push(c - 1);
+  if (x < ww - 1) stack.push(c + 1);
+  if (y > 0) stack.push(c - ww);
+  if (y < wh - 1) stack.push(c + ww);
+}
+// run-length encoding, alternating land/water runs starting with land
+const rle = [];
+let cur = 0, run = 0;
+for (let i = 0; i < river.length; i++) {
+  if (river[i] === cur) run++;
+  else { rle.push(run); cur = river[i]; run = 1; }
+}
+rle.push(run);
+
 const map = {
   name: 'Мидтаун, Манхэттен',
   attribution: '© OpenStreetMap contributors (ODbL)',
@@ -214,6 +283,7 @@ const map = {
   buildings,
   parks,
   water,
+  waterMask: { cell: WATER_CELL, w: ww, h: wh, rle },
   roads,
   labels,
 };

@@ -6,7 +6,7 @@ import { starsFor } from './progress';
 import { AgentRenderer } from './render/agents';
 import { Camera } from './render/camera';
 import { LEAN, MapLayer, MAX_VISUAL_H } from './render/mapLayer';
-import { drawGround, drawRange, drawTop, rangeOf, unitScreen, ZONE_FILL, ZONE_LINE } from './render/overlay';
+import { drawGround, drawRange, drawTop, rangeOf, UNIT_COLOR, unitScreen, ZONE_FILL, ZONE_LINE } from './render/overlay';
 import { abilityReady, useAbility } from './sim/abilities';
 import { BUILDING, type Grid, type MapData } from './sim/grid';
 import { zoneCost, zoneFromDrag } from './sim/support';
@@ -15,7 +15,7 @@ import {
   callAirstrike,
   canLevelUp,
   canPlace,
-  IN_BUILDING,
+  dropSquad,
   inExclusion,
   levelUp,
   levelUpCost,
@@ -29,13 +29,13 @@ import { ALL_TOOLS, costLabel, GROUPS, isAbility, isUnit, LINE_TOOLS, toolColor,
 
 const STEP = 1 / CFG.sim.hz;
 const MAX_TICKS_PER_FRAME = 10;
+const SIM_BUDGET_MS = 12;
 const sound = new Sound();
 
 function placeError(t: UnitType): string {
   if (SPECIALISTS.has(t)) return 'Нужно здание у улицы внутри safe zone';
-  if (IN_BUILDING.has(t)) return 'Штурмовики занимают здание у улицы';
-  if (t === 'sniper') return 'Снайпер — на улицу или на крышу у улицы';
-  return 'Сюда нельзя: нужна открытая улица';
+  if (t === 'tank' || t === 'bmp' || t === 'evac' || t === 'mines') return 'Сюда нельзя: нужна открытая улица';
+  return 'Нужна улица или здание не дальше ~40 м от улицы';
 }
 
 export interface GameResult {
@@ -164,6 +164,7 @@ export class Game {
     if (k === 'M' || k === 'Ь') return this.toggleSound();
     if (k === 'U' && this.selected) return this.upgradeSelected();
     if (k === 'X' && this.selected) return this.removeSelected();
+    if (k === 'D' && this.selected) return this.dropSelected();
     const f = ['F1', 'F2', 'F3', 'F4', 'F5'].indexOf(k);
     if (f >= 0 && this.world.phase === 'battle') {
       e.preventDefault();
@@ -246,7 +247,11 @@ export class Game {
   private tap(tx: number, ty: number, sx: number, sy: number): void {
     const w = this.world;
     const t = this.tool;
-    const { x, y } = this.pick(tx, ty);
+    const picked = this.pick(tx, ty);
+    // a roof drawn over a street: street-only units still take the street underneath
+    const forType = (type: UnitType) => (!canPlace(w, type, picked.x, picked.y) && canPlace(w, type, tx, ty) ? { x: tx, y: ty } : picked);
+    const want = t && isUnit(t) ? t : this.selected?.type;
+    const { x, y } = want ? forType(want) : picked;
     if (t && isAbility(t) && !LINE_TOOLS.has(t)) {
       if (w.phase !== 'battle') return this.flash('Поддержка доступна после начала вспышки');
       if (!abilityReady(w, t)) return this.flash(w.cooldowns[t] > 0 ? 'Перезарядка' : 'Не хватает бюджета');
@@ -322,10 +327,10 @@ export class Game {
       const ex = CFG.outbreak.exclusion;
       const touches = w.phase === 'planning' && w.outbreak.some((o) => o.x > z.x0 - ex && o.x < z.x1 + ex && o.y > z.y0 - ex && o.y < z.y1 + ex);
       if (touches) return this.flash('Safe zone не может задевать зону очага');
-      const cost = zoneCost(z);
+      const cost = zoneCost(w, z);
       if (w.budget < cost) return this.flash(`Не хватает бюджета: зона стоит $${cost}`);
       w.budget -= cost;
-      w.addZone(z);
+      w.addZone(z, cost);
     } else if (t === 'airstrike' || t === 'fire') {
       if (Math.hypot(x1 - x0, y1 - y0) < 10) return this.flash('Проведите линию — это направление захода');
       if (w.phase !== 'battle') return this.flash('Поддержка доступна после начала вспышки');
@@ -353,6 +358,12 @@ export class Game {
     this.refreshHud();
   }
 
+  private dropSelected(): void {
+    if (this.selected && dropSquad(this.world, this.selected)) sound.ui('place');
+    else this.flash('Десант ещё не готов');
+    this.refreshHud();
+  }
+
   private upgradeSelected(): void {
     if (this.selected && levelUp(this.world, this.selected)) sound.ui('place');
     else this.flash('Не хватает бюджета');
@@ -372,8 +383,8 @@ export class Game {
     for (const c of w.spikeCells) w.spikes[c] = 0;
     w.barricadeCells = [];
     w.spikeCells = [];
-    for (const z of w.zones) w.budget += zoneCost(z);
-    w.zones = [];
+    w.budget += w.zoneSpent;
+    w.clearZones();
     w.evacDirty = true;
     this.selected = null;
     sound.ui('click');
@@ -513,12 +524,17 @@ export class Game {
       ? `<button class="up" id="sel-up" ${w.budget < levelUpCost(u) ? 'disabled' : ''}>[U] Ур.${u.level + 1} $${levelUpCost(u)}</button>`
       : '<button disabled>Макс. уровень</button>';
     const refund = u.type === 'heli' ? '<button disabled>—</button>' : `<button id="sel-x">[X] Снять +$${this.refundOf(u)}</button>`;
-    const html = `<div class="head"><span>${def.name}</span><small>УР. ${u.level}/${CFG.levels.max}</small></div><div class="body">${rows}</div><div class="acts">${refund}${up}</div>`;
+    const squad =
+      u.type === 'bmp'
+        ? `<button id="sel-drop" style="grid-column:1/-1" ${u.aux > 0 || w.phase !== 'battle' ? 'disabled' : ''}>[D] Высадить десант${u.aux > 0 ? ` · ${Math.ceil(u.aux)} с` : ''}</button>`
+        : '';
+    const html = `<div class="head"><span>${def.name}</span><small>УР. ${u.level}/${CFG.levels.max}</small></div><div class="body">${rows}</div><div class="acts">${refund}${up}${squad}</div>`;
     if (sel.dataset.html !== html) {
       sel.innerHTML = html;
       sel.dataset.html = html;
       document.getElementById('sel-x')?.addEventListener('click', () => this.removeSelected());
       document.getElementById('sel-up')?.addEventListener('click', () => this.upgradeSelected());
+      document.getElementById('sel-drop')?.addEventListener('click', () => this.dropSelected());
     }
     sel.classList.remove('hidden');
   }
@@ -541,13 +557,16 @@ export class Game {
     this.last = now;
     if (w.phase === 'battle') {
       this.acc += dt * this.speed;
+      // simulate within a time budget so the picture stays smooth; a slow device
+      // plays slower instead of stuttering
+      const t0 = performance.now();
       let n = 0;
-      while (this.acc >= STEP && n < MAX_TICKS_PER_FRAME) {
+      while (this.acc >= STEP && n < MAX_TICKS_PER_FRAME && (n === 0 || performance.now() - t0 < SIM_BUDGET_MS)) {
         w.tick(STEP);
         this.acc -= STEP;
         n++;
       }
-      if (n === MAX_TICKS_PER_FRAME) this.acc = 0; // device can't keep up: slow down instead of spiralling
+      if (this.acc > STEP * 2) this.acc = STEP; // dropped time is not caught up later
     }
     sound.drain(w.sfx, this.cam);
     // horde drone: more zombies and a closer camera make it louder
@@ -572,6 +591,8 @@ export class Game {
     mc.setTransform(1, 0, 0, 1, 0, 0);
     mc.drawImage(this.mapCache, 0, 0);
     drawGround(mc, w, cam, dpr);
+    for (const u of w.units)
+      if (!u.moving && w.grid.solid[w.grid.idx(u.x, u.y)] === BUILDING) this.mapLayer.highlight(mc, cam, dpr, u.x, u.y, UNIT_COLOR[u.type]);
 
     this.agents.draw(w, cam, dpr, Math.min(1, this.acc / STEP));
 
@@ -625,7 +646,7 @@ export class Game {
       tc.font = '600 13px "IBM Plex Mono", monospace';
       tc.textAlign = 'center';
       tc.fillStyle = '#fff';
-      tc.fillText(z ? `$${zoneCost(z)}` : 'слишком мала или велика', cx, cy);
+      tc.fillText(z ? `$${zoneCost(w, z)}` : 'слишком мала или велика', cx, cy);
     } else if (t === 'airstrike' || t === 'fire') {
       const len = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) || 1;
       const L = t === 'airstrike' ? CFG.airstrike.length : CFG.abilities.fire.length;

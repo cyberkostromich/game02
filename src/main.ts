@@ -1,7 +1,7 @@
 import { CFG, type UpgradeId } from './config';
 import { Game, type GameResult } from './game';
 import { MISSIONS, type Mission } from './missions';
-import { canUpgrade, loadProgress, medals, saveProgress, upgradeCost } from './progress';
+import { canUpgrade, loadProgress, medals, recordRun, saveProgress, upgradeCost } from './progress';
 import { Grid, type MapData } from './sim/grid';
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -27,7 +27,8 @@ function showMenu(): void {
     const open = unlocked(i);
     return `<div class="card ${open ? '' : 'locked'}">
       <div class="info"><b>${i + 1}. ${ms.title}</b><p>${ms.brief}</p>
-      <div class="meta num">${ms.population.toLocaleString('ru-RU')} мирных · $${ms.budget.toLocaleString('ru-RU')} · очагов: ${ms.outbreak.length}${ms.zombieHp && ms.zombieHp > 1 ? ` · живучесть зомби ×${ms.zombieHp}` : ''}</div></div>
+      <div class="meta num">${ms.population.toLocaleString('ru-RU')} мирных · $${ms.budget.toLocaleString('ru-RU')} · очагов: ${ms.outbreak.length}${ms.zombieHp && ms.zombieHp > 1 ? ` · живучесть зомби ×${ms.zombieHp}` : ''}</div>
+      ${progress.best[ms.id] ? `<div class="meta num" style="color:var(--teal)">Рекорд: эвакуировано ${progress.best[ms.id].evacuated.toLocaleString('ru-RU')} · спасено ${progress.best[ms.id].savedPct}%</div>` : ''}</div>
       <div style="text-align:center"><div class="stars">${starStr(progress.stars[ms.id] ?? 0)}</div>
       <button class="btn" data-play="${i}" ${open ? '' : 'disabled'} style="margin-top:8px">${open ? 'Играть' : '🔒'}</button></div>
     </div>`;
@@ -44,6 +45,7 @@ function showMenu(): void {
     <div class="logo"><img src="./icon.svg" alt="" /><div><h1>Zombie <span>Fuckers</span></h1><div class="sub">Нью-Йорк · Мидтаун · 40.755° N 73.984° W</div></div></div>
     <p class="lead">Сдерживание орды на реальной карте Мидтауна: 4894 здания из OpenStreetMap с настоящей высотой. Изучите очаг, займите крыши снайперами, перекройте улицы, разверните safe zone и эвакуацию — и спасите как можно больше людей.</p>
     <h2>Миссии</h2>${missions}
+    ${topTable()}
     <h2>Усиления · медалей: ${medals(progress)}</h2>
     <p class="lead" style="margin:-4px 0 10px;font-size:13px">Звёзды за миссии — это медали. Победа нужна, чтобы открыть следующую миссию.</p>
     ${ups}
@@ -72,14 +74,37 @@ function play(ms: Mission): void {
   (window as unknown as { __zf: Game }).__zf = game; // handle for automated checks
 }
 
+function topTable(): string {
+  if (!progress.runs.length) return '';
+  const title = (id: string) => MISSIONS.find((m) => m.id === id)?.title ?? id;
+  const rows = progress.runs
+    .map(
+      (r, i) =>
+        `<tr><td>${i + 1}</td><td>${title(r.mission)}</td><td class="num">${r.evacuated.toLocaleString('ru-RU')}</td><td class="num">${r.savedPct}%</td><td>${r.won ? 'победа' : 'провал'}</td><td class="num">${r.date}</td></tr>`,
+    )
+    .join('');
+  return `<h2>Ваш топ · по эвакуированным</h2><div class="top"><table><thead><tr><th>#</th><th>Миссия</th><th>Вывезено</th><th>Спасено</th><th>Итог</th><th>Дата</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 function showResult(ms: Mission, r: GameResult): void {
   const w = game!.world;
   const prev = progress.stars[ms.id] ?? 0;
-  if (r.stars > prev) {
-    progress.stars[ms.id] = r.stars;
-    saveProgress(progress);
-  }
+  if (r.stars > prev) progress.stars[ms.id] = r.stars;
   const pct = Math.round((r.saved / Math.max(1, r.population)) * 100);
+  const rec = recordRun(progress, {
+    mission: ms.id,
+    date: new Date().toISOString().slice(0, 10),
+    evacuated: w.stats.evacuated,
+    savedPct: pct,
+    won: r.won,
+    kills: w.stats.zombiesKilled,
+  });
+  saveProgress(progress);
+  const badges = [
+    rec.evacuated && w.stats.evacuated > 0 ? 'новый рекорд эвакуации' : '',
+    rec.saved && r.won ? 'новый рекорд спасённых' : '',
+    rec.place ? `#${rec.place} в вашем топе` : '',
+  ].filter(Boolean);
   const fmt = (n: number) => n.toLocaleString('ru-RU');
   const next = MISSIONS.indexOf(ms) + 1;
   const modal = $('modal');
@@ -96,6 +121,7 @@ function showResult(ms: Mission, r: GameResult): void {
     <div class="inner">
     <div style="color:var(--muted)">${ms.title}</div>
     <div class="big-stars stars">${starStr(r.stars)}</div>
+    ${badges.length ? `<div style="color:var(--gold);font-weight:600;margin-bottom:8px">★ ${badges.join(' · ')}</div>` : ''}
     <div class="stat"><span>Спасено</span><b class="num">${fmt(r.saved)} из ${fmt(r.population)} (${pct}%)</b></div>
     <div class="stat"><span>Эвакуировано</span><span class="num">${fmt(w.stats.evacuated)}</span></div>
     <div class="stat"><span>Заражено</span><span class="num">${fmt(w.stats.infected)}</span></div>

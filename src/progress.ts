@@ -1,21 +1,49 @@
 import { CFG, type UpgradeId, type Upgrades } from './config';
 
 // Campaign progress, kept in the browser only.
+export interface Run {
+  mission: string;
+  date: string; // ISO day
+  evacuated: number;
+  savedPct: number;
+  won: boolean;
+  kills: number;
+}
+
 export interface Progress {
   stars: Record<string, number>;
   upgrades: Upgrades;
+  best: Record<string, { evacuated: number; savedPct: number }>;
+  runs: Run[]; // top runs by people evacuated
 }
+
+const TOP = 10;
 
 const KEY = 'zombies-nyc-progress-v1';
 
 export function loadProgress(): Progress {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { stars: {}, upgrades: {}, ...JSON.parse(raw) };
+    if (raw) return { stars: {}, upgrades: {}, best: {}, runs: [], ...JSON.parse(raw) };
   } catch {
     /* private mode or blocked storage: play without saving */
   }
-  return { stars: {}, upgrades: {} };
+  return { stars: {}, upgrades: {}, best: {}, runs: [] };
+}
+
+/** Records a finished run; returns which personal bests it beat. */
+export function recordRun(p: Progress, run: Run): { evacuated: boolean; saved: boolean; place: number } {
+  const prev = p.best[run.mission];
+  const evacuated = !prev || run.evacuated > prev.evacuated;
+  const saved = !prev || run.savedPct > prev.savedPct;
+  p.best[run.mission] = {
+    evacuated: Math.max(run.evacuated, prev?.evacuated ?? 0),
+    savedPct: Math.max(run.savedPct, prev?.savedPct ?? 0),
+  };
+  p.runs.push(run);
+  p.runs.sort((a, b) => b.evacuated - a.evacuated || b.savedPct - a.savedPct);
+  p.runs = p.runs.slice(0, TOP);
+  return { evacuated, saved, place: p.runs.indexOf(run) + 1 };
 }
 
 export function saveProgress(p: Progress): void {

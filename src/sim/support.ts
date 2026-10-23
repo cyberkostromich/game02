@@ -13,13 +13,9 @@ export interface Zone {
   y1: number;
 }
 
-export function inRect(z: Zone, x: number, y: number, pad = 0): boolean {
-  return x >= z.x0 - pad && x <= z.x1 + pad && y >= z.y0 - pad && y <= z.y1 + pad;
-}
-
-/** Safe zones: drawn rectangles plus a circle around every evacuation point. */
+/** Safe zones: the drawn (merged) zone cells plus a circle around every evac point. */
 export function inSafeZone(w: World, x: number, y: number): boolean {
-  if (w.zones.some((z) => inRect(z, x, y))) return true;
+  if (w.zoneMask[w.grid.idx(x, y)]) return true;
   const r2 = CFG.safeZone.radius ** 2;
   return w.units.some((u) => u.type === 'evac' && (u.x - x) ** 2 + (u.y - y) ** 2 < r2);
 }
@@ -33,19 +29,22 @@ export function zoneFromDrag(x0: number, y0: number, x1: number, y1: number): Zo
   return z;
 }
 
-export function zoneCost(z: Zone): number {
-  return Math.ceil((z.x1 - z.x0) * (z.y1 - z.y0) * CFG.safeZone.costPerM2);
+/** Grid cells a rectangle covers. */
+export function rectCells(w: World, z: Zone): number[] {
+  const g = w.grid;
+  const out: number[] = [];
+  const c0x = Math.max(1, Math.floor(z.x0 / g.cell));
+  const c1x = Math.min(g.w - 2, Math.floor(z.x1 / g.cell));
+  const c0y = Math.max(1, Math.floor(z.y0 / g.cell));
+  const c1y = Math.min(g.h - 2, Math.floor(z.y1 / g.cell));
+  for (let y = c0y; y <= c1y; y++) for (let x = c0x; x <= c1x; x++) out.push(y * g.w + x);
+  return out;
 }
 
-/** A zone is intact while no zombie stands inside it. */
-export function zoneIntact(w: World, z: Zone): boolean {
-  const g = w.grid;
-  const c0 = g.idx(z.x0, z.y0);
-  const c1 = g.idx(z.x1, z.y1);
-  const cols = (c1 % g.w) - (c0 % g.w);
-  for (let r = Math.floor(c0 / g.w); r <= Math.floor(c1 / g.w); r++)
-    for (let k = 0; k <= cols; k++) if (w.crowd[r * g.w + (c0 % g.w) + k] > 0) return false;
-  return true;
+/** Price of extending the safe zone by this rectangle: only cells not already covered. */
+export function zoneCost(w: World, z: Zone): number {
+  const fresh = rectCells(w, z).filter((c) => !w.zoneMask[c]).length;
+  return Math.ceil(fresh * w.grid.cell * w.grid.cell * CFG.safeZone.costPerM2);
 }
 
 function healUnits(w: World, u: Unit, radius: number, rate: number): void {

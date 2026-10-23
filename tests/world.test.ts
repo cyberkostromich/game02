@@ -112,11 +112,14 @@ describe('defences', () => {
     expect(w.kind[civ]).not.toBe(CIV); // collateral damage is real
   });
 
-  it('garrison must sit in a building next to a street', () => {
+  it('squads take streets or buildings; armour and evac need the street', () => {
     const w = arena(200, [[80, 80, 120, 120]]);
     expect(canPlace(w, 'garrison', 82, 100)).toBe(true);
-    expect(canPlace(w, 'garrison', 50, 50)).toBe(false);
+    expect(canPlace(w, 'garrison', 50, 50)).toBe(true);
     expect(canPlace(w, 'turret', 50, 50)).toBe(true);
-    expect(canPlace(w, 'turret', 100, 100)).toBe(false);
+    expect(canPlace(w, 'turret', 100, 100)).toBe(true); // rooftop gun
+    expect(canPlace(w, 'tank', 100, 100)).toBe(false);
+    expect(canPlace(w, 'tank', 50, 50)).toBe(true);
+    expect(canPlace(w, 'evac', 100, 100)).toBe(false);
   });
 });

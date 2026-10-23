@@ -137,3 +137,84 @@ describe('moving units', () => {
     expect(w.orderMove(u, 50, 50)).toBe(false); // not movable
   });
 });
+
+describe('merged safe zones', () => {
+  it('overlapping rectangles merge into one zone and overlap is free', async () => {
+    const { zoneCost } = await import('../src/sim/support');
+    const w = arena(400);
+    const a = { x0: 40, y0: 40, x1: 140, y1: 140 };
+    const b = { x0: 100, y0: 100, x1: 200, y1: 200 };
+    const full = zoneCost(w, b);
+    w.addZone(a, zoneCost(w, a));
+    expect(zoneCost(w, b)).toBeLessThan(full); // the shared corner is already paid for
+    w.addZone(b, zoneCost(w, b));
+    expect(w.zoneParts.length).toBe(1);
+    w.addZone({ x0: 300, y0: 300, x1: 360, y1: 360 });
+    expect(w.zoneParts.length).toBe(2);
+  });
+
+  it('civilians shelter inside and units there are resupplied while it holds', () => {
+    const w = arena(400);
+    w.addZone({ x0: 200, y0: 200, x1: 300, y1: 300 });
+    const civ = w.spawn(CIV, 150, 250);
+    const u = w.addUnit('turret', 280, 280);
+    u.ammo = 0;
+    w.startBattle();
+    w.spawn(ZOMBIE, 20, 20);
+    run(w, 30);
+    expect(w.zoneMask[w.grid.idx(w.x[civ], w.y[civ])]).toBe(1);
+    expect(u.ammo).toBe(300);
+  });
+});
+
+describe('armour', () => {
+  it('a tank crushes zombies in its path', () => {
+    const w = arena(400);
+    const t = w.addUnit('tank', 40, 200);
+    w.startBattle();
+    for (let k = 0; k < 8; k++) w.spawn(ZOMBIE, 120 + k * 10, 200);
+    w.speed.fill(0); // zombies stand still for the test
+    expect(w.orderMove(t, 340, 200)).toBe(true);
+    run(w, 80);
+    expect(w.killsBy.tank).toBeGreaterThanOrEqual(6);
+  });
+
+  it('the tank holds its main gun when civilians are in the blast', () => {
+    const w = arena(400);
+    const t = w.addUnit('tank', 100, 200);
+    w.startBattle();
+    for (let k = 0; k < 5; k++) w.spawn(CIV, 180 + k, 202);
+    const z = w.spawn(ZOMBIE, 182, 200);
+    w.speed[z] = 0;
+    w.tick(0.1);
+    expect(t.ammo).toBe(40); // no shell fired
+  });
+
+  it('a BMP drops a hunting squad once per cooldown', async () => {
+    const { dropSquad } = await import('../src/sim/units');
+    const w = arena(400);
+    const b = w.addUnit('bmp', 100, 100);
+    w.startBattle();
+    w.spawn(ZOMBIE, 300, 300);
+    expect(dropSquad(w, b)).toBe(true);
+    expect(dropSquad(w, b)).toBe(false);
+    run(w, 0.1);
+    expect(w.counts.recruit).toBe(6);
+  });
+});
+
+describe('personal top', () => {
+  it('keeps the best runs by people evacuated and flags records', async () => {
+    const { recordRun } = await import('../src/progress');
+    const p: import('../src/progress').Progress = { stars: {}, upgrades: {}, best: {}, runs: [] };
+    const run = (ev: number) => ({ mission: 'm', date: '2026-10-23', evacuated: ev, savedPct: 50, won: true, kills: 1 });
+    expect(recordRun(p, run(100)).evacuated).toBe(true);
+    expect(recordRun(p, run(50)).evacuated).toBe(false);
+    const r = recordRun(p, run(300));
+    expect(r.evacuated).toBe(true);
+    expect(r.place).toBe(1);
+    for (let k = 0; k < 20; k++) recordRun(p, run(k));
+    expect(p.runs.length).toBe(10);
+    expect(p.best.m.evacuated).toBe(300);
+  });
+});

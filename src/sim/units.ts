@@ -1,7 +1,7 @@
 import { CFG, type UnitType } from '../config';
 import { BUILDING, OPEN } from './grid';
-import { inRect, inSafeZone, updateSpecialist, zoneIntact } from './support';
-import { FREE, CIV, ZOMBIE, type World } from './world';
+import { inSafeZone, updateSpecialist } from './support';
+import { FREE, CIV, RECRUIT, ZOMBIE, type World } from './world';
 
 export interface Unit {
   id: number;
@@ -23,9 +23,18 @@ export interface Unit {
   moving: boolean;
   route: Uint16Array | null; // distance field to the march destination
   dest: { x: number; y: number; inside: boolean } | null;
+  dir: number; // hull heading (vehicles, marching units)
+  aux: number; // secondary cooldown: tank machine gun, BMP squad drop
 }
 
-export const MOVABLE: ReadonlySet<UnitType> = new Set(['sniper', 'garrison', 'turret', 'mortar']);
+export const MOVABLE: ReadonlySet<UnitType> = new Set(['sniper', 'garrison', 'turret', 'mortar', 'tank', 'bmp']);
+/** Vehicles keep fighting on the move and shrug off bites. */
+export const VEHICLES: ReadonlySet<UnitType> = new Set(['tank', 'bmp']);
+
+/** Height a unit sits at in a building with this roof: roofs for gunners, windows for squads. */
+export function elevFor(type: UnitType, roof: number): number {
+  return type === 'garrison' ? Math.min(roof, 8) : roof;
+}
 
 /** Fire-rate / throughput multiplier from the unit's level. */
 export function levelRate(u: Unit): number {
@@ -57,9 +66,10 @@ export function magazineOf(u: Unit): number {
 }
 
 /** Units that live inside a building; the rest stand on the street. */
-export const IN_BUILDING: ReadonlySet<UnitType> = new Set(['garrison', 'medic', 'repair', 'barracks']);
 /** Building specialisations, allowed only inside a safe zone. */
 export const SPECIALISTS: ReadonlySet<UnitType> = new Set(['medic', 'repair', 'barracks']);
+/** Units that need open ground; everything else combat may also take a building. */
+export const STREET_ONLY: ReadonlySet<UnitType> = new Set(['evac', 'mines', 'tank', 'bmp']);
 
 export interface Shell {
   x: number;
@@ -140,7 +150,8 @@ function boom(w: World, x: number, y: number, r: number, by: string): void {
   w.zomHash.forEachInRadius(w.x, w.y, x, y, r, kill);
   w.civHash.forEachInRadius(w.x, w.y, x, y, r, kill);
   // explosions also wreck barricades and units caught in them
-  for (const u of w.units) if (u.type !== 'heli' && u.type !== 'mines' && Math.hypot(u.x - x, u.y - y) < r * 0.7) u.hp -= 80;
+  for (const u of w.units)
+    if (u.type !== 'heli' && u.type !== 'mines' && Math.hypot(u.x - x, u.y - y) < r * 0.7) u.hp -= VEHICLES.has(u.type) ? 10 : 80;
 }
 
 function fireAt(w: World, u: Unit, range: number, reload: number, accuracy: number, los: boolean): void {
@@ -156,6 +167,53 @@ function fireAt(w: World, u: Unit, range: number, reload: number, accuracy: numb
   w.sfx.push({ k: u.type === 'sniper' ? 'sniper' : 'gun', x: u.x, y: u.y });
   w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: w.x[t], y2: w.y[t], r: 0, t: 0, life: u.type === 'sniper' ? 0.35 : 0.08, h: u.elev });
   if (w.rng.next() < accuracy && w.hit(t, u.type)) u.kills++;
+}
+
+/** Main gun (blast, holds fire near civilians) plus a coaxial machine gun. */
+function tankFire(w: World, u: Unit, dt: number): void {
+  const d = CFG.units.tank;
+  u.aux -= dt;
+  if (u.aux <= 0) {
+    const mgCd = u.cd;
+    u.cd = 0;
+    const ammo = u.ammo;
+    u.ammo = Infinity; // the MG has its own belt
+    fireAt(w, u, d.mgRange, d.mgReload, d.mgAccuracy, true);
+    if (u.cd > 0) u.aux = u.cd;
+    u.cd = mgCd;
+    u.ammo = ammo;
+  }
+  if (u.cd > 0 || u.ammo <= 0) return;
+  const h0 = u.elev + CFG.sight.eye;
+  const range = unitRange(w, 'tank', 0, u.level);
+  const t = w.zomHash.nearest(w.x, w.y, u.x, u.y, range, 12, (i) => w.kind[i] === ZOMBIE && lineOfSight(w, u.x, u.y, h0, w.x[i], w.y[i]));
+  if (t < 0) return;
+  const tx = w.x[t];
+  const ty = w.y[t];
+  if (w.civHash.countInRadius(w.x, w.y, tx, ty, d.blast) > CFG.armour.tankCivilianRisk) return;
+  u.cd = d.reload / levelRate(u);
+  u.ammo--;
+  u.aim = Math.atan2(ty - u.y, tx - u.x);
+  w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: tx, y2: ty, r: 0, t: 0, life: 0.15 });
+  const before = w.stats.zombiesKilled;
+  boom(w, tx, ty, d.blast, 'tank');
+  u.kills += w.stats.zombiesKilled - before;
+}
+
+/** BMP drops its squad as a free hunting team. */
+export function dropSquad(w: World, u: Unit): boolean {
+  const d = CFG.units.bmp;
+  if (u.type !== 'bmp' || u.aux > 0 || w.phase !== 'battle') return false;
+  for (let k = 0; k < d.squad; k++) {
+    const i = w.spawn(RECRUIT, u.x + w.rng.range(-3, 3), u.y + w.rng.range(-3, 3));
+    if (i >= 0 && !w.grid.open(w.grid.idx(w.x[i], w.y[i]))) {
+      w.x[i] = w.px[i] = u.x;
+      w.y[i] = w.py[i] = u.y;
+    }
+  }
+  w.stats.population += d.squad; // soldiers count as lives to save
+  u.aux = d.squadCooldown;
+  return true;
 }
 
 /** Picks the zombie cluster with the most zombies and acceptable civilian risk. */
@@ -220,12 +278,22 @@ export function updateUnits(w: World, dt: number): void {
     (u) => u.type === 'evac' && w.zomHash.nearest(w.x, w.y, u.x, u.y, CFG.supply.breachRadius) < 0,
   );
   const zone2 = CFG.safeZone.radius ** 2;
-  const intact = w.zones.filter((z) => zoneIntact(w, z));
+  // a zone part is intact while no zombie stands inside it
+  const intact = w.zoneParts.map((cells) => !cells.some((c) => w.crowd[c] > 0));
+  const g = w.grid;
+  const suppliedByZone = (u: Unit) => {
+    const c = g.idx(u.x, u.y);
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const p = w.zonePart[c + dy * g.w + dx];
+        if (p >= 0 && intact[p]) return true;
+      }
+    return false;
+  };
   for (const u of w.units) {
     const mag = magazineOf(u);
     if (u.ammo >= mag) continue;
-    if (depots.some((d) => (d.x - u.x) ** 2 + (d.y - u.y) ** 2 < zone2) || intact.some((z) => inRect(z, u.x, u.y, 10)))
-      u.ammo = mag;
+    if (depots.some((d) => (d.x - u.x) ** 2 + (d.y - u.y) ** 2 < zone2) || suppliedByZone(u)) u.ammo = mag;
   }
 
   for (const u of w.units) {
@@ -233,9 +301,18 @@ export function updateUnits(w: World, dt: number): void {
     u.cd -= dt;
     if (u.moving) {
       w.marchStep(u, dt);
-      continue;
+      if (!VEHICLES.has(u.type)) continue;
     }
     switch (u.type) {
+      case 'tank':
+        tankFire(w, u, dt);
+        break;
+      case 'bmp': {
+        const d = CFG.units.bmp;
+        u.aux -= dt;
+        fireAt(w, u, unitRange(w, 'bmp', 0, u.level), d.reload, d.accuracy, true);
+        break;
+      }
       case 'sniper': {
         const d = CFG.units.sniper;
         fireAt(w, u, unitRange(w, 'sniper', u.elev, u.level), d.reload, d.accuracy, true);
@@ -366,9 +443,8 @@ export function canPlace(w: World, type: UnitType, x: number, y: number): boolea
   const street = g.solid[c] === OPEN && g.barricade[c] <= 0;
   const building = g.solid[c] === BUILDING && nearStreet(w, c);
   if (SPECIALISTS.has(type)) return building && inSafeZone(w, x, y);
-  if (IN_BUILDING.has(type)) return building;
-  if (type === 'sniper') return street || building;
-  return street;
+  if (STREET_ONLY.has(type)) return street;
+  return street || building;
 }
 
 /** During planning nothing may be deployed inside an outbreak zone. */

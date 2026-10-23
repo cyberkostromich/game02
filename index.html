@@ -160,6 +160,11 @@
       .btn.ghost { background: transparent; color: var(--text); border-color: var(--line-2); }
       .btn:disabled { opacity: .35; }
       .locked { opacity: .5; }
+      .top { overflow-x: auto; border: 1px solid var(--line); background: var(--panel-2); }
+      .top table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .top th, .top td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #263049; white-space: nowrap; }
+      .top th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+      .top tr:first-child td { color: var(--gold); }
 
       .modal { position: fixed; inset: 0; background: rgba(5,7,12,.72); display: grid; place-items: center; padding: 16px; }
       .modal .box { background: var(--panel-2); border: 1px solid var(--line-2); width: min(440px, 100%); max-height: 100%; overflow-y: auto; }

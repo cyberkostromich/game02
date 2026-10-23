@@ -5,8 +5,8 @@ import { FieldSolver, INF } from './field';
 import { BUILDING, Grid, OPEN } from './grid';
 import { SpatialHash } from './hash';
 import { Rng } from './rng';
-import { inRect, updateRecruits, type Zone } from './support';
-import { doorsOf, IN_BUILDING, MOVABLE, updateUnits, type Effect, type Strike, type Shell, type Unit } from './units';
+import { rectCells, updateRecruits, type Zone } from './support';
+import { doorsOf, elevFor, MOVABLE, updateUnits, VEHICLES, type Effect, type Strike, type Shell, type Unit } from './units';
 
 // Agent kinds
 export const FREE = 0;
@@ -14,6 +14,7 @@ export const CIV = 1;
 export const INFECTED = 2; // bitten, still looks and acts human until it turns
 export const ZOMBIE = 3;
 export const RECRUIT = 4; // armed civilian or paratrooper
+const SENSE_CELL = 32; // m
 
 export type Phase = 'planning' | 'battle' | 'won' | 'lost';
 
@@ -92,7 +93,16 @@ export class World {
   strikes: Strike[] = [];
   effects: Effect[] = [];
   splats: { x: number; y: number; z: boolean }[] = [];
-  zones: Zone[] = [];
+  /** merged safe zone: cell mask, connected parts, money spent */
+  readonly zoneMask: Uint8Array;
+  private readonly sense: Uint8Array; // coarse blocks a zombie could smell prey in
+  private readonly senseTmp: Uint8Array;
+  private readonly senseW: number;
+  private readonly senseH: number;
+  readonly zonePart: Int32Array;
+  zoneParts: number[][] = [];
+  zoneSpent = 0;
+  zoneVersion = 0;
   clouds: Cloud[] = [];
   drops: Drop[] = [];
   cooldowns: Record<AbilityId, number> = { gas: 0, fire: 0, para: 0, arms: 0 };
@@ -136,6 +146,12 @@ export class World {
     this.shelterField = new Uint16Array(cells).fill(INF);
     this.unitAt = new Int32Array(cells);
     this.spikes = new Uint8Array(cells);
+    this.zoneMask = new Uint8Array(cells);
+    this.zonePart = new Int32Array(cells).fill(-1);
+    this.senseW = Math.ceil(widthM / SENSE_CELL);
+    this.senseH = Math.ceil(heightM / SENSE_CELL);
+    this.sense = new Uint8Array(this.senseW * this.senseH);
+    this.senseTmp = new Uint8Array(this.senseW * this.senseH);
     this.srcBuf = new Int32Array(cells);
     this.solver = new FieldSolver(grid);
     this.civHash = new SpatialHash(widthM, heightM, CFG.sim.hashCell, capacity);
@@ -221,6 +237,7 @@ export class World {
     }
     this.phase = 'battle';
     this.preyT = this.zomT = this.evacT = 0;
+    this.recount();
   }
 
   /** Removes agent i; `by` credits a zombie kill to a unit type or ability. */
@@ -252,11 +269,11 @@ export class World {
     const c = this.grid.idx(x, y);
     const roof = this.grid.solid[c] === BUILDING ? this.grid.height[c] : 0;
     // snipers climb to the roof; squads in a building fire from low windows
-    const elev = type === 'sniper' ? roof : Math.min(roof, 8);
+    const elev = elevFor(type, roof);
     const ammo = 'magazine' in def ? def.magazine : 'charges' in def ? def.charges : Infinity;
     const u: Unit = {
       id: this.nextUnitId++, type, x, y, hp: def.hp, maxHp: def.hp, cd: 0, acc: 0, age: 0,
-      tx: x, ty: y, aim: -Math.PI / 2, elev, level: 1, ammo, kills: 0, moving: false, route: null, dest: null,
+      tx: x, ty: y, aim: -Math.PI / 2, elev, level: 1, ammo, kills: 0, moving: false, route: null, dest: null, dir: -Math.PI / 2, aux: 0,
     };
     this.units.push(u);
     if (type === 'evac') this.evacDirty = true;
@@ -278,7 +295,7 @@ export class World {
       if (u.type === 'heli' || u.type === 'mines') continue; // out of reach / not a target
       const c = g.idx(u.x, u.y);
       if (u.moving) continue; // marching units are hit where they stand, below
-      if (IN_BUILDING.has(u.type) || g.solid[c] === BUILDING) {
+      if (g.solid[c] === BUILDING) {
         // zombies reach a building unit through the street cells at its doors
         for (const d of doorsOf(this, c)) this.unitAt[d] = u.id;
         continue;
@@ -299,8 +316,43 @@ export class World {
     }
   }
 
-  addZone(z: Zone): void {
-    this.zones.push(z);
+  /** Adds a rectangle to the safe zone; overlapping or touching parts merge into one. */
+  addZone(z: Zone, cost = 0): void {
+    for (const c of rectCells(this, z)) this.zoneMask[c] = 1;
+    this.zoneSpent += cost;
+    this.relabelZones();
+  }
+
+  clearZones(): void {
+    this.zoneMask.fill(0);
+    this.zoneSpent = 0;
+    this.relabelZones();
+  }
+
+  /** Connected parts of the zone mask (4-neighbour flood fill). */
+  private relabelZones(): void {
+    const { zoneMask: m, zonePart: part } = this;
+    const w = this.grid.w;
+    part.fill(-1);
+    this.zoneParts = [];
+    for (let s = 0; s < m.length; s++) {
+      if (!m[s] || part[s] >= 0) continue;
+      const id = this.zoneParts.length;
+      const cells: number[] = [];
+      const stack = [s];
+      part[s] = id;
+      while (stack.length) {
+        const c = stack.pop()!;
+        cells.push(c);
+        for (const n of [c - 1, c + 1, c - w, c + w])
+          if (n >= 0 && n < m.length && m[n] && part[n] < 0) {
+            part[n] = id;
+            stack.push(n);
+          }
+      }
+      this.zoneParts.push(cells);
+    }
+    this.zoneVersion++;
     this.evacDirty = true;
   }
 
@@ -341,7 +393,7 @@ export class World {
     const roof = g.solid[c] === BUILDING ? g.height[c] : 0;
     u.x = x;
     u.y = y;
-    u.elev = u.type === 'sniper' ? roof : Math.min(roof, 8);
+    u.elev = elevFor(u.type, roof);
     this.rebuildUnitAt();
   }
 
@@ -350,8 +402,17 @@ export class World {
     const g = this.grid;
     const route = u.route!;
     const speed = CFG.move[u.type as keyof typeof CFG.move] as number;
-    const near = this.zomHash.countInRadius(this.x, this.y, u.x, u.y, 3);
-    u.hp -= near * CFG.zombie.unitDps * dt;
+    if (u.type === 'tank') {
+      // tracks: zombies under the hull are crushed
+      this.zomHash.forEachInRadius(this.x, this.y, u.x, u.y, CFG.armour.crushRadius, (i) => {
+        if (this.kind[i] !== ZOMBIE) return;
+        this.kill(i, 'tank');
+        u.kills++;
+      });
+    } else {
+      const near = this.zomHash.countInRadius(this.x, this.y, u.x, u.y, 3);
+      u.hp -= near * CFG.zombie.unitDps * dt * (VEHICLES.has(u.type) ? CFG.armour.bmpArmour : 1);
+    }
     const c = g.idx(u.x, u.y);
     if (route[c] <= 2) {
       const d = u.dest!;
@@ -359,7 +420,7 @@ export class World {
       u.y = d.inside ? d.y : g.cy(c);
       if (d.inside) {
         const roof = g.height[g.idx(d.x, d.y)];
-        u.elev = u.type === 'sniper' ? roof : Math.min(roof, 8);
+        u.elev = elevFor(u.type, roof);
       }
       u.moving = false;
       u.route = null;
@@ -375,7 +436,8 @@ export class World {
     const step = Math.min(len, speed * dt);
     u.x += (dx / len) * step;
     u.y += (dy / len) * step;
-    u.aim = Math.atan2(dy, dx);
+    u.dir = Math.atan2(dy, dx);
+    if (!VEHICLES.has(u.type)) u.aim = u.dir;
   }
 
   placeSpikes(cells: number[]): void {
@@ -397,7 +459,9 @@ export class World {
     this.px.set(this.x.subarray(0, n));
     this.py.set(this.y.subarray(0, n));
 
-    this.civHash.build(this.x, this.y, this.kind, n, (1 << CIV) | (1 << INFECTED) | (1 << RECRUIT));
+    // the crowd moves slowly: re-index it every other tick (kind is re-checked on use)
+    if (this.tickNo % 2 === 1 || this.civHash.start[this.civHash.start.length - 1] === 0)
+      this.civHash.build(this.x, this.y, this.kind, n, (1 << CIV) | (1 << INFECTED) | (1 << RECRUIT));
     this.zomHash.build(this.x, this.y, this.kind, n, 1 << ZOMBIE);
     this.updateCrowd();
     this.updateFields(dt);
@@ -413,8 +477,13 @@ export class World {
       const zf = this.zombieField;
       const c = this.grid.idx(this.x[i], this.y[i]);
       const to = zf[c] < INF ? this.bestNeighbour(c, (nn) => zf[nn], false) : -1;
-      if (to >= 0) this.stepTowards(i, to, dist, false);
-      else this.wander(i, dist * 0.5, false);
+      if (to >= 0) return this.stepTowards(i, to, dist, false);
+      const z = this.zomHash.nearest(this.x, this.y, this.x[i], this.y[i], CFG.recruit.seek);
+      if (z < 0) return this.wander(i, dist * 0.5, false);
+      const dx = this.x[z] - this.x[i];
+      const dy = this.y[z] - this.y[i];
+      const len = Math.hypot(dx, dy) || 1;
+      if (!this.tryMove(i, (dx / len) * dist, (dy / len) * dist, false)) this.wander(i, dist, false);
     });
     updateUnits(this, dt);
     updateAbilities(this, dt);
@@ -437,22 +506,27 @@ export class World {
     this.zomT -= dt;
     this.evacT -= dt;
     if (this.zomT <= 0) {
-      // zombie proximity: drives civilian panic and bounds the prey search
+      // zombie proximity, only as far as civilians can see: drives panic
       this.zomT = s.fieldEvery;
       this.preyT = Math.min(this.preyT, s.fieldEvery / 2); // keep the two solves on different ticks
       let k = 0;
       for (let i = 0; i < this.n; i++) if (this.kind[i] === ZOMBIE) src[k++] = g.idx(this.x[i], this.y[i]);
-      this.solver.solve(src, k, this.zombieField, { cap: Math.ceil((CFG.zombie.senseRadius / g.cell) * 2) });
+      this.solver.solve(src, k, this.zombieField, { cap: Math.ceil((CFG.civilian.panicRadius / g.cell) * 2) + 2 });
+      this.updateSense();
     } else if (this.preyT <= 0) {
       this.preyT = s.fieldEvery;
-      const zf = this.zombieField;
+      // prey only counts within a zombie's sense radius (coarse blocks)
+      const sense = this.sense;
+      const sc = SENSE_CELL;
+      const sw = this.senseW;
       let k = 0;
       for (let i = 0; i < this.n; i++) {
         if (this.kind[i] !== CIV && this.kind[i] !== RECRUIT) continue;
-        const c = g.idx(this.x[i], this.y[i]);
-        if (zf[c] < INF) src[k++] = c;
+        if (!sense[Math.floor(this.y[i] / sc) * sw + Math.floor(this.x[i] / sc)]) continue;
+        src[k++] = g.idx(this.x[i], this.y[i]);
       }
-      for (let c = 0; c < this.unitAt.length; c++) if (this.unitAt[c] && zf[c] < INF) src[k++] = c;
+      for (let c = 0; c < this.unitAt.length; c++)
+        if (this.unitAt[c] && sense[Math.floor(g.cy(c) / sc) * sw + Math.floor(g.cx(c) / sc)]) src[k++] = c;
       this.solver.solve(src, k, this.preyField, { barricadeCost: CFG.zombie.barricadeCost, targets: this.crowd });
     }
     if (this.evacT <= 0 || this.evacDirty) {
@@ -462,11 +536,26 @@ export class World {
       for (const u of this.units) if (u.type === 'evac') src[k++] = g.idx(u.x, u.y);
       this.solver.solve(src, k, this.evacField, { cap: Math.ceil((CFG.units.evac.radius / g.cell) * 2) });
       k = 0;
-      for (const z of this.zones)
-        for (let y = z.y0 + g.cell / 2; y < z.y1; y += g.cell)
-          for (let x = z.x0 + g.cell / 2; x < z.x1; x += g.cell) src[k++] = g.idx(x, y);
+      for (const part of this.zoneParts) for (const c of part) src[k++] = c;
       this.solver.solve(src, k, this.shelterField, { cap: Math.ceil((CFG.safeZone.attract / g.cell) * 2) });
     }
+  }
+
+  /** Coarse blocks within a zombie's sense radius of any zombie. */
+  private updateSense(): void {
+    const sw = this.senseW;
+    const sh = this.senseH;
+    const mark = this.senseTmp;
+    mark.fill(0);
+    for (let i = 0; i < this.n; i++)
+      if (this.kind[i] === ZOMBIE) mark[Math.floor(this.y[i] / SENSE_CELL) * sw + Math.floor(this.x[i] / SENSE_CELL)] = 1;
+    const r = Math.ceil(CFG.zombie.senseRadius / SENSE_CELL);
+    this.sense.fill(0);
+    for (let y = 0; y < sh; y++)
+      for (let x = 0; x < sw; x++) {
+        if (!mark[y * sw + x]) continue;
+        for (let yy = Math.max(0, y - r); yy <= Math.min(sh - 1, y + r); yy++) this.sense.fill(1, yy * sw + Math.max(0, x - r), yy * sw + Math.min(sw - 1, x + r) + 1);
+      }
   }
 
   /** Picks the neighbour cell with the lowest score; returns its index or -1. */
@@ -474,19 +563,21 @@ export class World {
     const g = this.grid;
     const w = g.w;
     let best = -1;
-    let bestS = score(c);
+    const here = score(c);
+    let bestGain = 0; // steepest descent: score drop per metre, so diagonals don't win ties
     for (let dy = -w; dy <= w; dy += w)
       for (let dx = -1; dx <= 1; dx++) {
         const nidx = c + dy + dx;
         if (nidx === c || g.solid[nidx] !== OPEN) continue;
+        const diag = dx !== 0 && dy !== 0;
         // no squeezing diagonally past a wall corner (or a barricade, for zombies)
-        if (dx !== 0 && dy !== 0) {
+        if (diag) {
           const blocked = (q: number) => g.solid[q] !== OPEN || (isZombie && g.barricade[q] > 0);
           if (blocked(c + dx) || blocked(c + dy)) continue;
         }
-        const sc = score(nidx);
-        if (sc < bestS) {
-          bestS = sc;
+        const gain = (here - score(nidx)) / (diag ? 1.414 : 1);
+        if (gain > bestGain) {
+          bestGain = gain;
           best = nidx;
         }
       }
@@ -566,7 +657,7 @@ export class World {
         const to = this.bestNeighbour(c, (nn) => ef[nn] + (zf[nn] < 6 ? (6 - zf[nn]) * 6 : 0) + crowd[nn] * 2, false);
         if (to >= 0) this.stepTowards(i, to, v, false);
         else this.wander(i, v * 0.3, false);
-      } else if (sf[c] === 0 && this.zones.some((z) => inRect(z, this.x[i], this.y[i]))) {
+      } else if (sf[c] === 0 && this.zoneMask[c]) {
         // sheltering: mill about but stay inside the zone
         if ((i & 3) === phase) {
           const h = (this.heading[i] += this.rng.range(-0.6, 0.6));
