@@ -1,47 +1,41 @@
-import { CFG, type UnitType } from './config';
+import { Sound } from './audio';
+import { CFG, type UnitType, type Upgrades } from './config';
 import { attachInput } from './input';
 import { landmark, type Mission } from './missions';
 import { starsFor } from './progress';
 import { AgentRenderer } from './render/agents';
 import { Camera } from './render/camera';
 import { MapLayer } from './render/mapLayer';
-import { drawGround, drawRange, drawTop, rangeOf, UNIT_COLOR, unitScreen } from './render/overlay';
+import { drawGround, drawRange, drawTop, rangeOf, unitScreen, ZONE_FILL, ZONE_LINE } from './render/overlay';
+import { abilityReady, useAbility } from './sim/abilities';
 import type { Grid, MapData } from './sim/grid';
-import { barricadeCells, callAirstrike, canPlace, IN_BUILDING, inExclusion, SPECIALISTS, type Unit } from './sim/units';
+import { zoneCost, zoneFromDrag } from './sim/support';
+import {
+  barricadeCells,
+  callAirstrike,
+  canLevelUp,
+  canPlace,
+  IN_BUILDING,
+  inExclusion,
+  levelUp,
+  levelUpCost,
+  magazineOf,
+  SPECIALISTS,
+  type Unit,
+} from './sim/units';
 import { modsFrom, World } from './sim/world';
-import type { Upgrades } from './config';
+import { ALL_TOOLS, costLabel, GROUPS, isAbility, isUnit, LINE_TOOLS, toolColor, toolCost, type Tool } from './tools';
 
-type Tool = UnitType | 'barricade' | 'airstrike';
-
-const TOOLS: { id: Tool; name: string; hint: string }[] = [
-  { id: 'sniper', name: 'Снайпер', hint: 'Дальний точный огонь, нужна прямая видимость. На крыше высотки видит поверх домов и бьёт дальше.' },
-  { id: 'garrison', name: 'Штурмовики', hint: 'Отряд в здании у улицы: очень прочный, стреляет из окон. Ставится на дом.' },
-  { id: 'turret', name: 'Турель', hint: 'Шквальный огонь на 75 м, держит удар. Хороша на перекрытой улице.' },
-  { id: 'mortar', name: 'Миномёт', hint: 'Бьёт по скоплениям на 50–340 м. Не стреляет, если рядом много мирных.' },
-  { id: 'evac', name: 'Эвакуация', hint: 'Мирные в радиусе 300 м бегут к пункту и вывозятся. Вокруг пункта — safe zone для спецзданий.' },
-  { id: 'barricade', name: 'Баррикада', hint: 'Проведите линию поперёк улицы. Зомби ломают её, мирные проходят.' },
-  { id: 'medic', name: 'Медпункт', hint: 'Здание в safe zone: лечит заражённых рядом (до превращения) и чинит бойцов.' },
-  { id: 'repair', name: 'Мастерская', hint: 'Здание в safe zone: восстанавливает баррикады и технику в радиусе 110 м.' },
-  { id: 'barracks', name: 'Казарма', hint: 'Здание в safe zone: вооружает проходящих мирных — рекруты сами отстреливаются.' },
-  { id: 'heli', name: 'Вертолёт', hint: 'Пулемёт с воздуха на 70 с. Выберите вертолёт и коснитесь карты, чтобы перенаправить.' },
-  { id: 'airstrike', name: 'Авиаудар', hint: 'Проведите линию захода. Бомбят всё на полосе — и мирных тоже. Только во время боя.' },
-];
+const STEP = 1 / CFG.sim.hz;
+const MAX_TICKS_PER_FRAME = 10;
+const sound = new Sound();
 
 function placeError(t: UnitType): string {
-  if (SPECIALISTS.has(t)) return 'Нужно здание у улицы внутри safe zone (вокруг пункта эвакуации)';
+  if (SPECIALISTS.has(t)) return 'Нужно здание у улицы внутри safe zone';
   if (IN_BUILDING.has(t)) return 'Штурмовики занимают здание у улицы';
   if (t === 'sniper') return 'Снайпер — на улицу или на крышу у улицы';
   return 'Сюда нельзя: нужна открытая улица';
 }
-
-function toolCost(t: Tool): number {
-  if (t === 'barricade') return CFG.barricade.costPerCell;
-  if (t === 'airstrike') return CFG.airstrike.cost;
-  return CFG.units[t].cost;
-}
-
-const STEP = 1 / CFG.sim.hz;
-const MAX_TICKS_PER_FRAME = 8;
 
 export interface GameResult {
   won: boolean;
@@ -63,6 +57,7 @@ export class Game {
   private mapCacheKey = '';
   private dpr = 1;
   private tool: Tool | null = null;
+  private group: (typeof GROUPS)[number]['id'] = 'deploy';
   private selected: Unit | null = null;
   private hoverPt: { x: number; y: number } | null = null;
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
@@ -72,6 +67,7 @@ export class Game {
   private hudT = 0;
   private raf = 0;
   private ended = false;
+  private flashUntil = 0;
   private el = (id: string) => document.getElementById(id)!;
 
   constructor(
@@ -82,10 +78,10 @@ export class Game {
     private readonly onEnd: (r: GameResult) => void,
     private readonly onQuit: () => void,
   ) {
-    const g = grid;
-    g.barricade.fill(0);
-    this.world = new World(g, map.width, map.height, Math.ceil(mission.population * 1.4) + 4000, mission.seed, modsFrom(upgrades));
+    grid.barricade.fill(0);
+    this.world = new World(grid, map.width, map.height, Math.ceil(mission.population * 1.4) + 4000, mission.seed, modsFrom(upgrades));
     const w = this.world;
+    w.zombieHp = mission.zombieHp ?? 1;
     w.populate(mission.population - (mission.crowds ?? []).reduce((a, c) => a + c.n, 0));
     for (const c of mission.crowds ?? []) {
       const p = landmark(map, c.at);
@@ -106,7 +102,6 @@ export class Game {
 
     this.resize();
     this.cam.fit(map.width, map.height);
-    // open on the outbreak, close enough to see the streets
     const o = w.outbreak[0];
     this.cam.x = o.x;
     this.cam.y = o.y;
@@ -114,12 +109,14 @@ export class Game {
 
     this.buildHud();
     attachInput(this.topCanvas, this.cam, {
-      wantsLine: () => this.tool === 'barricade' || this.tool === 'airstrike',
+      wantsLine: () => this.tool !== null && LINE_TOOLS.has(this.tool),
       tap: (x, y, sx, sy) => this.tap(x, y, sx, sy),
       line: (x0, y0, x1, y1, done) => this.line(x0, y0, x1, y1, done),
       hover: (x, y) => (this.hoverPt = { x, y }),
       cameraMoved: () => this.cam.clamp(map.width, map.height),
+      rotate: (d) => this.rotate(d),
     });
+    this.topCanvas.addEventListener('pointerdown', () => sound.unlock());
     window.addEventListener('resize', this.resize);
     window.addEventListener('keydown', this.key);
     this.last = performance.now();
@@ -130,9 +127,8 @@ export class Game {
     cancelAnimationFrame(this.raf);
     window.removeEventListener('resize', this.resize);
     window.removeEventListener('keydown', this.key);
-    // input listeners die with the replaced canvas
     const top = this.topCanvas;
-    top.replaceWith(top.cloneNode());
+    top.replaceWith(top.cloneNode()); // drops the input listeners
   }
 
   private resize = () => {
@@ -148,13 +144,31 @@ export class Game {
     this.mapCache.width = this.mapCanvas.width;
     this.mapCache.height = this.mapCanvas.height;
     this.mapCacheKey = '';
+    this.measureBar();
   };
 
+  private measureBar(): void {
+    const h = this.el('bar').getBoundingClientRect().height;
+    this.el('game').style.setProperty('--bar-h', `${Math.round(h)}px`);
+  }
+
   private key = (e: KeyboardEvent) => {
-    const n = Number(e.key);
-    if (n >= 1 && n <= TOOLS.length) this.setTool(TOOLS[n - 1].id);
-    else if (e.key === 'Escape') this.setTool(null);
-    else if (e.key === ' ') {
+    sound.unlock();
+    const k = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    const t = ALL_TOOLS.find((d) => d.key === k);
+    if (t) return this.setTool(t.id);
+    if (k === 'Escape') return this.setTool(null);
+    if (k === ',' || k === 'Б') return this.rotate(-1);
+    if (k === '.' || k === 'Ю') return this.rotate(1);
+    if (k === 'M' || k === 'Ь') return this.toggleSound();
+    if (k === 'U' && this.selected) return this.upgradeSelected();
+    if (k === 'X' && this.selected) return this.removeSelected();
+    const f = ['F1', 'F2', 'F3', 'F4', 'F5'].indexOf(k);
+    if (f >= 0 && this.world.phase === 'battle') {
+      e.preventDefault();
+      return this.setSpeed([0.5, 1, 2, 4, 8][f]);
+    }
+    if (k === ' ') {
       e.preventDefault();
       if (this.world.phase === 'planning') this.start();
       else this.setSpeed(this.speed === 0 ? 1 : 0);
@@ -163,45 +177,75 @@ export class Game {
 
   // ---------- actions ----------
 
+  private rotate(d: 1 | -1): void {
+    this.cam.rotate(d);
+    this.mapCacheKey = '';
+    sound.ui('click');
+  }
+
+  private toggleSound(): void {
+    sound.unlock();
+    const muted = sound.toggle();
+    this.el('btn-sound').textContent = muted ? '🔇' : '🔊';
+  }
+
   private start(): void {
+    sound.unlock();
     this.world.startBattle();
     this.el('btn-start').classList.add('hidden');
+    this.el('btn-refund').classList.add('hidden');
     this.el('speed').classList.remove('hidden');
     this.el('btn-retreat').classList.remove('hidden');
+    sound.ui('place');
     this.refreshHud();
+    this.measureBar();
   }
 
   private setSpeed(s: number): void {
     this.speed = s;
-    this.el('speed').querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) === s));
+    this.el('speed').querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) === s));
   }
 
   private setTool(t: Tool | null): void {
     this.tool = this.tool === t ? null : t;
     this.selected = null;
     this.drag = null;
+    if (this.tool) this.group = GROUPS.find((g) => g.tools.some((d) => d.id === this.tool))!.id;
+    sound.ui('click');
     this.refreshHud();
+  }
+
+  private flash(msg: string): void {
+    const h = this.el('hint');
+    h.textContent = msg;
+    h.classList.add('warn');
+    this.flashUntil = performance.now() + 1600;
+    sound.ui('error');
   }
 
   private tap(x: number, y: number, sx: number, sy: number): void {
     const w = this.world;
-    if (this.tool && this.tool !== 'barricade' && this.tool !== 'airstrike') {
-      const t = this.tool;
-      const cost = toolCost(t);
-      if (w.budget < cost) return this.flash('Не хватает бюджета');
+    const t = this.tool;
+    if (t && isAbility(t) && !LINE_TOOLS.has(t)) {
+      if (w.phase !== 'battle') return this.flash('Поддержка доступна после начала вспышки');
+      if (!abilityReady(w, t)) return this.flash(w.cooldowns[t] > 0 ? 'Перезарядка' : 'Не хватает бюджета');
+      useAbility(w, t, x, y);
+      sound.ui('place');
+      return this.refreshHud();
+    }
+    if (t && isUnit(t)) {
+      if (w.budget < toolCost(t)) return this.flash('Не хватает бюджета');
       if (inExclusion(w, x, y)) return this.flash('До начала вспышки в зону очага не войти');
       if (!canPlace(w, t, x, y)) return this.flash(placeError(t));
-      w.budget -= cost;
+      w.budget -= toolCost(t);
       const u = w.addUnit(t, x, y);
       if (t === 'heli') u.aim = 0;
-      this.refreshHud();
-      return;
+      sound.ui('place');
+      return this.refreshHud();
     }
-    // select a unit under the finger
     const hit = this.unitAtScreen(sx, sy);
-    if (hit) {
-      this.selected = hit === this.selected ? null : hit;
-    } else if (this.selected?.type === 'heli') {
+    if (hit) this.selected = hit === this.selected ? null : hit;
+    else if (this.selected?.type === 'heli') {
       this.selected.tx = x;
       this.selected.ty = y;
     } else this.selected = null;
@@ -210,7 +254,7 @@ export class Game {
 
   private unitAtScreen(sx: number, sy: number): Unit | null {
     let best: Unit | null = null;
-    let bestD = 22;
+    let bestD = 24;
     for (const u of this.world.units) {
       const [ux, uy] = unitScreen(this.cam, u);
       const d = Math.hypot(ux - sx, uy - sy);
@@ -226,129 +270,221 @@ export class Game {
     const w = this.world;
     this.drag = done ? null : { x0, y0, x1, y1 };
     if (!done) return;
-    if (this.tool === 'barricade') {
-      let cells = barricadeCells(w, x0, y0, x1, y1);
-      cells = cells.slice(0, Math.floor(w.budget / CFG.barricade.costPerCell));
+    const t = this.tool;
+    if (t === 'barricade' || t === 'spikes') {
+      const per = t === 'barricade' ? CFG.barricade.costPerCell : CFG.spikes.costPerCell;
+      const max = t === 'barricade' ? CFG.barricade.maxCells : CFG.spikes.maxCells;
+      let cells = barricadeCells(w, x0, y0, x1, y1, max);
+      if (t === 'spikes') cells = cells.filter((c) => !w.spikes[c]);
+      cells = cells.slice(0, Math.floor(w.budget / per));
       if (!cells.length) return this.flash('Не хватает бюджета или нет места');
-      w.budget -= cells.length * CFG.barricade.costPerCell;
-      w.placeBarricade(cells);
-    } else if (this.tool === 'airstrike') {
+      w.budget -= cells.length * per;
+      if (t === 'barricade') w.placeBarricade(cells);
+      else w.placeSpikes(cells);
+    } else if (t === 'zone') {
+      const z = zoneFromDrag(x0, y0, x1, y1);
+      if (!z) return this.flash(`Зона от ${CFG.safeZone.minSide} м по стороне и до ${CFG.safeZone.maxArea / 10000} га`);
+      const ex = CFG.outbreak.exclusion;
+      const touches = w.phase === 'planning' && w.outbreak.some((o) => o.x > z.x0 - ex && o.x < z.x1 + ex && o.y > z.y0 - ex && o.y < z.y1 + ex);
+      if (touches) return this.flash('Safe zone не может задевать зону очага');
+      const cost = zoneCost(z);
+      if (w.budget < cost) return this.flash(`Не хватает бюджета: зона стоит $${cost}`);
+      w.budget -= cost;
+      w.addZone(z);
+    } else if (t === 'airstrike' || t === 'fire') {
       if (Math.hypot(x1 - x0, y1 - y0) < 10) return this.flash('Проведите линию — это направление захода');
-      if (w.phase !== 'battle') return this.flash('Авиаудар доступен после начала вспышки');
-      if (!callAirstrike(w, x0, y0, x1, y1)) return this.flash('Не хватает бюджета');
+      if (w.phase !== 'battle') return this.flash('Поддержка доступна после начала вспышки');
+      const ok = t === 'airstrike' ? callAirstrike(w, x0, y0, x1, y1) : useAbility(w, 'fire', x0, y0, x1, y1);
+      if (!ok) return this.flash(t === 'fire' && w.cooldowns.fire > 0 ? 'Перезарядка' : 'Не хватает бюджета');
     }
+    sound.ui('place');
     this.refreshHud();
+  }
+
+  private refundOf(u: Unit): number {
+    const share = this.world.phase === 'planning' ? 1 : 0.5;
+    let spent = CFG.units[u.type].cost;
+    for (let l = 1; l < u.level; l++) spent += Math.round(CFG.units[u.type].cost * CFG.levels.costShare * l);
+    return Math.floor(spent * share * Math.max(0, u.hp / u.maxHp));
   }
 
   private removeSelected(): void {
     const u = this.selected;
     if (!u) return;
-    const refund = this.world.phase === 'planning' ? 1 : 0.5;
-    this.world.budget += Math.floor(CFG.units[u.type].cost * refund * (u.hp / u.maxHp));
+    this.world.budget += this.refundOf(u);
     this.world.removeUnit(u);
     this.selected = null;
+    sound.ui('click');
     this.refreshHud();
   }
 
-  private flash(msg: string): void {
-    const h = this.el('hint');
-    h.textContent = msg;
-    h.style.color = '#ffb3ad';
-    setTimeout(() => {
-      h.style.color = '';
-      this.refreshHud();
-    }, 1400);
+  private upgradeSelected(): void {
+    if (this.selected && levelUp(this.world, this.selected)) sound.ui('place');
+    else this.flash('Не хватает бюджета');
+    this.refreshHud();
+  }
+
+  /** Planning only: take everything back at full price. */
+  private refundAll(): void {
+    const w = this.world;
+    if (w.phase !== 'planning') return;
+    for (const u of [...w.units]) {
+      w.budget += this.refundOf(u);
+      w.removeUnit(u);
+    }
+    w.budget += w.barricadeCells.length * CFG.barricade.costPerCell + w.spikeCells.length * CFG.spikes.costPerCell;
+    for (const c of w.barricadeCells) w.grid.barricade[c] = 0;
+    for (const c of w.spikeCells) w.spikes[c] = 0;
+    w.barricadeCells = [];
+    w.spikeCells = [];
+    for (const z of w.zones) w.budget += zoneCost(z);
+    w.zones = [];
+    w.evacDirty = true;
+    this.selected = null;
+    sound.ui('click');
+    this.refreshHud();
   }
 
   // ---------- HUD ----------
 
   private buildHud(): void {
-    this.el('m-title').textContent = this.mission.title;
-    const tools = this.el('tools');
-    tools.innerHTML = '';
-    for (const t of TOOLS) {
-      const b = document.createElement('button');
-      b.className = 'tool';
-      b.dataset.tool = t.id;
-      const color = t.id === 'barricade' ? '#ffb347' : t.id === 'airstrike' ? '#ff5a4f' : UNIT_COLOR[t.id];
-      const shape = t.id === 'sniper' ? 'transform:rotate(45deg) scale(.8)' : t.id === 'mortar' || t.id === 'evac' ? 'border-radius:50%' : '';
-      b.innerHTML = `<div class="ico" style="background:${color};${shape}"></div><div class="nm">${t.name}</div><div class="cost num">$${toolCost(t.id)}${t.id === 'barricade' ? '/кл' : ''}</div>`;
-      b.onclick = () => this.setTool(t.id);
-      tools.appendChild(b);
-    }
+    const groups = this.el('groups');
+    const tabs = GROUPS.map((g) => `<button data-tab="${g.id}">${g.title}</button>`).join('');
+    groups.innerHTML =
+      `<div class="tabs">${tabs}</div>` +
+      GROUPS.map(
+        (g) =>
+          `<div class="group" data-group="${g.id}"><div class="label">${g.title}</div><div class="list">${g.tools
+            .map(
+              (d) =>
+                `<button class="tool" data-tool="${d.id}" title="${d.hint}"><kbd>[${d.key}]</kbd><span class="sw" style="background:${toolColor(d.id)}"></span><span class="nm">${d.name}</span><span class="cost num">${costLabel(d.id)}</span></button>`,
+            )
+            .join('')}</div></div>`,
+      ).join('');
+    groups.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach((b) => (b.onclick = () => this.setTool(b.dataset.tool as Tool)));
+    groups.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          this.group = b.dataset.tab as typeof this.group;
+          sound.ui('click');
+          this.refreshHud();
+        }),
+    );
     this.el('btn-start').classList.remove('hidden');
+    this.el('btn-refund').classList.remove('hidden');
     this.el('speed').classList.add('hidden');
     this.el('btn-retreat').classList.add('hidden');
     this.el('btn-start').onclick = () => this.start();
+    this.el('btn-refund').onclick = () => this.refundAll();
     this.el('btn-menu').onclick = () => this.onQuit();
-    // confirm in place: the second tap within 3 s retreats (no browser dialogs)
+    this.el('btn-rotl').onclick = () => this.rotate(-1);
+    this.el('btn-rotr').onclick = () => this.rotate(1);
+    this.el('btn-sound').onclick = () => this.toggleSound();
+    this.el('btn-sound').textContent = sound.muted ? '🔇' : '🔊';
+    // confirm in place: a second tap within 3 s retreats (no browser dialogs)
     const retreat = this.el('btn-retreat');
     retreat.textContent = 'Отступить';
     retreat.onclick = () => {
       if (retreat.dataset.armed) return this.finish(false);
       retreat.dataset.armed = '1';
-      retreat.textContent = 'Точно? Мирные на улицах погибнут';
+      retreat.textContent = 'Точно? Ещё раз';
       setTimeout(() => {
         delete retreat.dataset.armed;
         retreat.textContent = 'Отступить';
       }, 3000);
     };
     this.el('speed')
-      .querySelectorAll('button')
-      .forEach((b) => (b.onclick = () => this.setSpeed(Number((b as HTMLButtonElement).dataset.s))));
+      .querySelectorAll<HTMLButtonElement>('button')
+      .forEach((b) => (b.onclick = () => this.setSpeed(Number(b.dataset.s))));
     this.setSpeed(1);
     this.refreshHud();
+    requestAnimationFrame(() => {
+      this.measureBar();
+      // keep the outbreak in the middle of the map area above the bottom bar
+      this.cam.panBy(0, -this.el('bar').getBoundingClientRect().height / 2);
+      this.mapCacheKey = '';
+    });
   }
 
   private refreshHud(): void {
     const w = this.world;
-    const fmt = (n: number) => n.toLocaleString('ru-RU');
-    this.el('budget').textContent = `$${fmt(w.budget)}`;
+    const fmt = (n: number) => Math.floor(n).toLocaleString('ru-RU');
+    const pop = Math.max(1, w.stats.population);
+    const civ = w.phase === 'planning' ? w.stats.population : w.counts.civ;
     const mm = Math.floor(w.time / 60);
     const ss = Math.floor(w.time % 60).toString().padStart(2, '0');
-    this.el('m-phase').textContent = w.phase === 'planning' ? 'Подготовка: расставьте силы' : `Вспышка · ${mm}:${ss}`;
-    this.el('c-civ').textContent = `${fmt(w.counts.civ || (w.phase === 'planning' ? w.stats.population : 0))} мирных`;
-    this.el('c-zom').textContent = `${fmt(w.counts.zombie)} зомби`;
-    this.el('c-inf').textContent = `${fmt(w.counts.infected)} заражено`;
-    this.el('c-evac').textContent = `${fmt(w.stats.evacuated)} эвакуировано`;
-    this.el('c-rec').textContent = `${fmt(w.counts.recruit)} рекрутов`;
-    this.el('c-rec').parentElement!.classList.toggle('hidden', w.counts.recruit === 0);
-    this.el('tools')
-      .querySelectorAll<HTMLButtonElement>('.tool')
-      .forEach((b) => {
-        const t = b.dataset.tool as Tool;
-        b.classList.toggle('active', t === this.tool);
-        b.disabled = w.budget < toolCost(t) || (t === 'airstrike' && w.phase !== 'battle');
-      });
-    const hint = this.el('hint');
-    const tool = TOOLS.find((t) => t.id === this.tool);
-    hint.textContent = tool
-      ? tool.hint
-      : w.phase === 'planning'
-        ? 'Зелёным отмечен очаг. Выберите силы внизу и коснитесь карты. Затем — «Начать».'
-        : 'Двигайте карту пальцем, масштаб — щипком или колесом. Коснитесь юнита, чтобы выбрать.';
+    const share = Math.round(((w.phase === 'planning' ? civ : w.saved()) / pop) * 100);
+    this.el('stats').innerHTML = `<div class="title">${this.mission.title}</div>
+      <div class="phase">${w.phase === 'planning' ? 'ПОДГОТОВКА · расставьте силы' : `ВСПЫШКА · ${mm}:${ss}`}</div>
+      <div class="rowv c-civ"><span>Мирные</span><b class="num">${fmt(civ)} · ${share}%</b></div>
+      <div class="rowv c-zom"><span>Зомби${w.zombieHp > 1 ? ` (HP ${w.zombieHp})` : ''}</span><b class="num">${fmt(w.counts.zombie)}</b></div>
+      ${w.counts.infected ? `<div class="rowv c-inf"><span>Заражены</span><b class="num">${fmt(w.counts.infected)}</b></div>` : ''}
+      ${w.stats.evacuated ? `<div class="rowv c-evac"><span>Эвакуировано</span><b class="num">${fmt(w.stats.evacuated)}</b></div>` : ''}
+      ${w.counts.recruit ? `<div class="rowv c-rec"><span>Рекруты</span><b class="num">${fmt(w.counts.recruit)}</b></div>` : ''}`;
+    this.el('budget').textContent = `$${fmt(w.budget)}`;
+    this.el('bounty').textContent = w.stats.bounty ? `+$${fmt(w.stats.bounty)} за убийства` : `$${CFG.bounty} за зомби`;
 
+    document.querySelectorAll<HTMLElement>('[data-group]').forEach((g) => g.classList.toggle('on', g.dataset.group === this.group));
+    document.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === this.group));
+    document.querySelectorAll<HTMLButtonElement>('.tool').forEach((b) => {
+      const t = b.dataset.tool as Tool;
+      const def = ALL_TOOLS.find((d) => d.id === t)!;
+      b.classList.toggle('active', t === this.tool);
+      const cd = isAbility(t) ? w.cooldowns[t] : 0;
+      b.disabled = w.budget < toolCost(t) || (!!def.battleOnly && w.phase !== 'battle') || cd > 0;
+      b.querySelector('.cost')!.textContent = cd > 0 ? `${Math.ceil(cd)} с` : costLabel(t);
+    });
+
+    if (performance.now() > this.flashUntil) {
+      const h = this.el('hint');
+      h.classList.remove('warn');
+      const def = ALL_TOOLS.find((d) => d.id === this.tool);
+      h.classList.toggle('idle', !def && w.phase !== 'planning');
+      h.textContent = def
+        ? def.hint
+        : w.phase === 'planning'
+          ? 'Зелёный круг — очаг: до начала туда не войти. Выберите силы внизу и коснитесь карты.'
+          : 'Тяните карту, щипок — масштаб, поворот двумя пальцами — вращение. Коснитесь юнита, чтобы выбрать.';
+    }
+    this.refreshSelected();
+  }
+
+  private refreshSelected(): void {
     const sel = this.el('sel');
     const u = this.selected;
-    if (u && this.world.units.includes(u)) {
-      const name = TOOLS.find((t) => t.id === u.type)!.name;
-      const refund = Math.floor(CFG.units[u.type].cost * (w.phase === 'planning' ? 1 : 0.5) * (u.hp / u.maxHp));
-      sel.innerHTML = `<b>${name}</b><div style="color:var(--muted);font-size:12px">${
-        u.type === 'heli'
-          ? `Осталось ${Math.max(0, Math.ceil(CFG.units.heli.duration - u.age))} с · коснитесь карты, чтобы лететь`
-          : `Прочность ${Math.ceil(u.hp)}/${u.maxHp}${u.elev > 0 && u.type === 'sniper' ? ` · крыша ${u.elev} м, дальность ${Math.round(rangeOf(w, 'sniper', u.elev).r)} м` : ''}`
-      }</div>`;
-      if (u.type !== 'heli') {
-        const b = document.createElement('button');
-        b.textContent = `Снять (+$${refund})`;
-        b.onclick = () => this.removeSelected();
-        sel.appendChild(b);
-      }
-      sel.classList.remove('hidden');
-    } else {
-      if (u) this.selected = null;
+    const w = this.world;
+    if (!u || !w.units.includes(u)) {
+      this.selected = null;
       sel.classList.add('hidden');
+      return;
     }
+    const def = ALL_TOOLS.find((d) => d.id === u.type)!;
+    const r = rangeOf(w, u.type, u.elev, u.level);
+    const mag = magazineOf(u);
+    const gauge = (name: string, f: number, val: string) =>
+      `<div class="gauge"><span>${name}</span><div class="track"><div class="fill" style="width:${Math.round(Math.max(0, Math.min(1, f)) * 100)}%"></div></div><span class="num">${val}</span></div>`;
+    const plain = (name: string, val: string) => `<div class="gauge"><span>${name}</span><span></span><span class="num">${val}</span></div>`;
+    const rows = [
+      u.type !== 'heli' && u.type !== 'mines' ? gauge('Прочность', u.hp / u.maxHp, `${Math.ceil(u.hp)}/${Math.round(u.maxHp)}`) : '',
+      r.r ? gauge('Дальность', r.r / 400, `${Math.round(r.r)} м`) : '',
+      Number.isFinite(mag) ? gauge('Патроны', u.ammo / mag, `${u.ammo}/${mag}`) : '',
+      u.type === 'mines' ? gauge('Заряды', u.ammo / CFG.units.mines.charges, `${u.ammo}`) : '',
+      u.type === 'heli' ? gauge('Топливо', 1 - u.age / CFG.units.heli.duration, `${Math.max(0, Math.ceil(CFG.units.heli.duration - u.age))} с`) : '',
+      u.elev > 0 && u.type === 'sniper' ? plain('Крыша', `${u.elev} м`) : '',
+      plain('Убито', `${u.kills}`),
+    ].join('');
+    const up = canLevelUp(u)
+      ? `<button class="up" id="sel-up" ${w.budget < levelUpCost(u) ? 'disabled' : ''}>[U] Ур.${u.level + 1} $${levelUpCost(u)}</button>`
+      : '<button disabled>Макс. уровень</button>';
+    const refund = u.type === 'heli' ? '<button disabled>—</button>' : `<button id="sel-x">[X] Снять +$${this.refundOf(u)}</button>`;
+    const html = `<div class="head"><span>${def.name}</span><small>УР. ${u.level}/${CFG.levels.max}</small></div><div class="body">${rows}</div><div class="acts">${refund}${up}</div>`;
+    if (sel.dataset.html !== html) {
+      sel.innerHTML = html;
+      sel.dataset.html = html;
+      document.getElementById('sel-x')?.addEventListener('click', () => this.removeSelected());
+      document.getElementById('sel-up')?.addEventListener('click', () => this.upgradeSelected());
+    }
+    sel.classList.remove('hidden');
   }
 
   private finish(won: boolean): void {
@@ -377,6 +513,7 @@ export class Game {
       }
       if (n === MAX_TICKS_PER_FRAME) this.acc = 0; // device can't keep up: slow down instead of spiralling
     }
+    sound.drain(w.sfx, this.cam);
     if (w.phase === 'won' || w.phase === 'lost') this.finish(w.phase === 'won');
     this.hudT -= dt;
     if (this.hudT <= 0) {
@@ -388,7 +525,7 @@ export class Game {
 
   private render(now: number): void {
     const { cam, dpr, world: w } = this;
-    const key = `${cam.x.toFixed(2)},${cam.y.toFixed(2)},${cam.zoom.toFixed(4)},${cam.vw},${cam.vh}`;
+    const key = `${cam.x.toFixed(2)},${cam.y.toFixed(2)},${cam.zoom.toFixed(4)},${cam.rot},${cam.vw},${cam.vh}`;
     if (key !== this.mapCacheKey) {
       this.mapLayer.draw(this.mapCache.getContext('2d')!, cam, dpr);
       this.mapCacheKey = key;
@@ -405,40 +542,64 @@ export class Game {
     tc.clearRect(0, 0, this.topCanvas.width, this.topCanvas.height);
     const t = this.tool;
     this.mapLayer.drawLabels(tc, cam, dpr);
-    drawTop(tc, w, cam, dpr, now, this.selected?.id ?? -1, t !== null && SPECIALISTS.has(t as UnitType));
+    drawTop(tc, w, cam, dpr, now, this.selected?.id ?? -1, t !== null && isUnit(t) && SPECIALISTS.has(t));
 
     if (this.selected && this.selected.type !== 'heli' && t === null) {
-      const r = rangeOf(w, this.selected.type, this.selected.elev);
-      drawRange(tc, cam, this.selected.x, this.selected.y, r.r, 'rgba(95,180,255,0.7)', r.rMin);
+      const r = rangeOf(w, this.selected.type, this.selected.elev, this.selected.level);
+      drawRange(tc, cam, this.selected.x, this.selected.y, r.r, 'rgba(214,66,143,0.8)', r.rMin);
     }
-    if (t && t !== 'barricade' && t !== 'airstrike' && this.hoverPt) {
+    if (t && isUnit(t) && this.hoverPt) {
       const ok = canPlace(w, t, this.hoverPt.x, this.hoverPt.y);
       const c = w.grid.idx(this.hoverPt.x, this.hoverPt.y);
       const r = rangeOf(w, t, t === 'sniper' ? w.grid.height[c] : 0);
-      drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, r.r, ok ? 'rgba(125,255,74,0.7)' : 'rgba(255,90,79,0.7)', r.rMin);
+      drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, r.r, ok ? 'rgba(125,255,90,0.7)' : 'rgba(255,90,79,0.7)', r.rMin);
     }
-    if (this.drag) {
-      const d = this.drag;
-      if (t === 'barricade') {
-        const cells = barricadeCells(w, d.x0, d.y0, d.x1, d.y1);
-        const g = w.grid;
-        tc.fillStyle = 'rgba(255,179,71,0.6)';
-        for (const c of cells) {
-          const [sx, sy] = cam.toScreen(g.cx(c) - g.cell / 2, g.cy(c) - g.cell / 2);
-          tc.fillRect(sx, sy, g.cell * cam.zoom, g.cell * cam.zoom);
-        }
-      } else if (t === 'airstrike') {
-        const len = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) || 1;
-        const a = CFG.airstrike;
-        const [sx, sy] = cam.toScreen(d.x0, d.y0);
-        const [ex, ey] = cam.toScreen(d.x0 + ((d.x1 - d.x0) / len) * a.length, d.y0 + ((d.y1 - d.y0) / len) * a.length);
-        tc.strokeStyle = 'rgba(255,90,79,0.5)';
-        tc.lineWidth = Math.max(4, a.width * w.mods.airstrikeWidth * cam.zoom);
-        tc.beginPath();
-        tc.moveTo(sx, sy);
-        tc.lineTo(ex, ey);
-        tc.stroke();
+    if (t === 'gas' && this.hoverPt) drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, CFG.abilities.gas.radius, 'rgba(200,230,90,0.8)');
+    if (t === 'arms' && this.hoverPt) drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, CFG.abilities.arms.radius, 'rgba(90,200,255,0.8)');
+    if (this.drag) this.drawDrag(tc);
+  }
+
+  private drawDrag(tc: CanvasRenderingContext2D): void {
+    const { cam, world: w } = this;
+    const d = this.drag!;
+    const t = this.tool;
+    if (t === 'barricade' || t === 'spikes') {
+      const cells = barricadeCells(w, d.x0, d.y0, d.x1, d.y1, t === 'barricade' ? CFG.barricade.maxCells : CFG.spikes.maxCells);
+      const g = w.grid;
+      const s = g.cell * cam.zoom;
+      tc.fillStyle = t === 'barricade' ? 'rgba(255,179,71,0.6)' : 'rgba(200,200,210,0.5)';
+      for (const c of cells) {
+        const [sx, sy] = cam.toScreen(g.cx(c), g.cy(c));
+        tc.fillRect(sx - s / 2, sy - s / 2, s, s);
       }
+    } else if (t === 'zone') {
+      const z = zoneFromDrag(d.x0, d.y0, d.x1, d.y1);
+      const pts = [cam.toScreen(d.x0, d.y0), cam.toScreen(d.x1, d.y0), cam.toScreen(d.x1, d.y1), cam.toScreen(d.x0, d.y1)];
+      tc.fillStyle = z ? ZONE_FILL : 'rgba(255,90,79,0.15)';
+      tc.strokeStyle = z ? ZONE_LINE : 'rgba(255,90,79,0.8)';
+      tc.lineWidth = 2;
+      tc.beginPath();
+      pts.forEach(([x, y], k) => (k ? tc.lineTo(x, y) : tc.moveTo(x, y)));
+      tc.closePath();
+      tc.fill();
+      tc.stroke();
+      const [cx, cy] = cam.toScreen((d.x0 + d.x1) / 2, (d.y0 + d.y1) / 2);
+      tc.font = '600 13px "IBM Plex Mono", monospace';
+      tc.textAlign = 'center';
+      tc.fillStyle = '#fff';
+      tc.fillText(z ? `$${zoneCost(z)}` : 'слишком мала или велика', cx, cy);
+    } else if (t === 'airstrike' || t === 'fire') {
+      const len = Math.hypot(d.x1 - d.x0, d.y1 - d.y0) || 1;
+      const L = t === 'airstrike' ? CFG.airstrike.length : CFG.abilities.fire.length;
+      const W = t === 'airstrike' ? CFG.airstrike.width * w.mods.airstrikeWidth : CFG.abilities.fire.width;
+      const [sx, sy] = cam.toScreen(d.x0, d.y0);
+      const [ex, ey] = cam.toScreen(d.x0 + ((d.x1 - d.x0) / len) * L, d.y0 + ((d.y1 - d.y0) / len) * L);
+      tc.strokeStyle = t === 'airstrike' ? 'rgba(255,90,79,0.5)' : 'rgba(255,122,47,0.55)';
+      tc.lineWidth = Math.max(4, W * cam.zoom);
+      tc.beginPath();
+      tc.moveTo(sx, sy);
+      tc.lineTo(ex, ey);
+      tc.stroke();
     }
   }
 }

@@ -1,50 +1,79 @@
 import { CFG, type UnitType } from '../config';
-import { unitRange, type Unit } from '../sim/units';
+import { magazineOf, unitRange, type Unit } from '../sim/units';
 import type { World } from '../sim/world';
 import type { Camera } from './camera';
 import { LEAN } from './mapLayer';
 
+// Palette after the original's look: combat units in magenta/pink, logistics
+// in teal, safe zones in violet, zombies neon green.
 export const UNIT_COLOR: Record<UnitType, string> = {
-  medic: '#ff6b8a',
-  repair: '#ffb347',
-  barracks: '#9b8cff',
-  sniper: '#5fb4ff',
-  turret: '#4f8dff',
-  mortar: '#8fa8ff',
-  garrison: '#6fd0ff',
-  evac: '#3fe0c8',
-  heli: '#b8d4ff',
+  sniper: '#ff5fb0',
+  garrison: '#e0479e',
+  turret: '#c04bd8',
+  mortar: '#9b5cff',
+  mines: '#f2c14e',
+  evac: '#2fd1b8',
+  medic: '#ff7a8f',
+  repair: '#f29b4e',
+  barracks: '#6aa8ff',
+  heli: '#d8e4ff',
 };
+export const ZONE_FILL = 'rgba(126,92,255,0.22)';
+export const ZONE_LINE = 'rgba(150,120,255,0.85)';
 
 const MAX_SPLATS = 6000;
 
-/** Below the agents: blood, barricades. */
+/** Below the agents: safe zones, spikes, barricades, blood. */
 export function drawGround(ctx: CanvasRenderingContext2D, w: World, cam: Camera, dpr: number): void {
-  const z = cam.zoom * dpr;
-  ctx.setTransform(z, 0, 0, z, dpr * (cam.vw / 2 - cam.x * cam.zoom), dpr * (cam.vh / 2 - cam.y * cam.zoom));
+  ctx.setTransform(...cam.matrix(dpr));
+  const g = w.grid;
+
+  for (const z of w.zones) {
+    ctx.fillStyle = ZONE_FILL;
+    ctx.fillRect(z.x0, z.y0, z.x1 - z.x0, z.y1 - z.y0);
+    ctx.strokeStyle = ZONE_LINE;
+    ctx.lineWidth = 2 / cam.zoom;
+    ctx.setLineDash([8 / cam.zoom, 5 / cam.zoom]);
+    ctx.strokeRect(z.x0, z.y0, z.x1 - z.x0, z.y1 - z.y0);
+    ctx.setLineDash([]);
+  }
+
   if (w.splats.length > MAX_SPLATS) w.splats.splice(0, w.splats.length - MAX_SPLATS);
   const sz = Math.max(1.6, 2.5 / cam.zoom);
-  ctx.fillStyle = 'rgba(90,150,40,0.45)';
+  ctx.fillStyle = 'rgba(90,170,40,0.4)';
   for (const s of w.splats) if (s.z) ctx.fillRect(s.x - sz / 2, s.y - sz / 2, sz, sz);
-  ctx.fillStyle = 'rgba(150,20,20,0.55)';
+  ctx.fillStyle = 'rgba(170,25,25,0.55)';
   for (const s of w.splats) if (!s.z) ctx.fillRect(s.x - sz / 2, s.y - sz / 2, sz, sz);
 
-  const g = w.grid;
+  ctx.fillStyle = 'rgba(190,190,200,0.55)';
+  for (const c of w.spikeCells) {
+    const x = g.cx(c);
+    const y = g.cy(c);
+    for (let k = -1; k <= 1; k++) ctx.fillRect(x + k * 1.2 - 0.3, y - 1.5, 0.6, 3);
+  }
+
   for (const c of w.barricadeCells) {
     const hp = g.barricade[c] / CFG.barricade.hp;
-    ctx.fillStyle = `rgba(255,${Math.round(120 + 80 * hp)},60,${0.5 + 0.5 * hp})`;
+    ctx.fillStyle = `rgba(255,${Math.round(120 + 80 * hp)},60,${0.55 + 0.45 * hp})`;
     ctx.fillRect(g.cx(c) - g.cell / 2 + 0.3, g.cy(c) - g.cell / 2 + 0.3, g.cell - 0.6, g.cell - 0.6);
   }
-}
-
-function unitSize(cam: Camera): number {
-  return Math.max(9, Math.min(22, cam.zoom * 5));
 }
 
 /** Screen position of a unit, lifted onto its roof in the 2.5D view. */
 export function unitScreen(cam: Camera, u: Unit): [number, number] {
   const [sx, sy] = cam.toScreen(u.x, u.y);
   return [sx, sy - u.elev * LEAN * cam.zoom];
+}
+
+function unitSize(cam: Camera): number {
+  return Math.max(9, Math.min(22, cam.zoom * 5));
+}
+
+function bar(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, f: number, color: string): void {
+  ctx.fillStyle = 'rgba(10,12,20,0.8)';
+  ctx.fillRect(x, y, w, 4);
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w * Math.max(0, Math.min(1, f)), 4);
 }
 
 function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: number, selected: boolean): void {
@@ -54,7 +83,7 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
   ctx.save();
   ctx.translate(sx, sy);
   ctx.lineWidth = 2;
-  ctx.strokeStyle = '#0a0d12';
+  ctx.strokeStyle = '#11131c';
   ctx.fillStyle = col;
   switch (u.type) {
     case 'sniper':
@@ -66,14 +95,14 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      ctx.rotate(u.aim);
+      ctx.rotate(u.aim + cam.angle);
       ctx.fillRect(0, -1, s * 0.9, 2);
       break;
     case 'turret':
       ctx.fillRect(-s / 2, -s / 2, s, s);
       ctx.strokeRect(-s / 2, -s / 2, s, s);
-      ctx.rotate(u.aim);
-      ctx.fillStyle = '#dbe8ff';
+      ctx.rotate(u.aim + cam.angle);
+      ctx.fillStyle = '#f3e6ff';
       ctx.fillRect(0, -2, s * 0.85, 4);
       break;
     case 'mortar':
@@ -81,20 +110,33 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
       ctx.arc(0, 0, s * 0.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = '#0a0d12';
+      ctx.fillStyle = '#11131c';
       ctx.beginPath();
       ctx.arc(0, 0, s * 0.2, 0, Math.PI * 2);
       ctx.fill();
       break;
     case 'garrison':
+      ctx.globalAlpha = 0.85;
+      ctx.fillRect(-s * 0.75, -s * 0.75, s * 1.5, s * 1.5);
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(-s * 0.75, -s * 0.75, s * 1.5, s * 1.5);
+      ctx.fillStyle = '#ffe3f2';
+      for (let k = 0; k < 4; k++) ctx.fillRect(-s * 0.45 + (k % 2) * s * 0.6, -s * 0.45 + Math.floor(k / 2) * s * 0.6, s * 0.3, s * 0.3);
+      break;
+    case 'mines':
       ctx.strokeStyle = col;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(-s * 0.7, -s * 0.7, s * 1.4, s * 1.4);
-      for (let k = 0; k < 4; k++) {
-        ctx.fillRect(-s * 0.45 + (k % 2) * s * 0.6, -s * 0.45 + Math.floor(k / 2) * s * 0.6, s * 0.3, s * 0.3);
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(s * 0.7, CFG.units.mines.radius * cam.zoom), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      for (let k = 0; k < 5; k++) {
+        const a = (k / 5) * Math.PI * 2;
+        ctx.fillRect(Math.cos(a) * s * 0.4 - 1.5, Math.sin(a) * s * 0.4 - 1.5, 3, 3);
       }
       break;
-    case 'evac': {
+    case 'evac':
       ctx.beginPath();
       ctx.arc(0, 0, s * 0.65, 0, Math.PI * 2);
       ctx.fill();
@@ -103,21 +145,19 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
       ctx.fillRect(-s * 0.12, -s * 0.42, s * 0.24, s * 0.84);
       ctx.fillRect(-s * 0.42, -s * 0.12, s * 0.84, s * 0.24);
       break;
-    }
     case 'medic':
     case 'repair':
-    case 'barracks': {
+    case 'barracks':
       ctx.fillRect(-s * 0.65, -s * 0.65, s * 1.3, s * 1.3);
       ctx.strokeRect(-s * 0.65, -s * 0.65, s * 1.3, s * 1.3);
-      ctx.fillStyle = '#10141a';
+      ctx.fillStyle = '#11131c';
       ctx.font = `800 ${Math.round(s * 0.9)}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(u.type === 'medic' ? '+' : u.type === 'repair' ? '⚒' : '★', 0, s * 0.05);
       break;
-    }
-    case 'heli': {
-      ctx.rotate(u.aim);
+    case 'heli':
+      ctx.rotate(u.aim + cam.angle);
       ctx.fillRect(-s * 0.7, -s * 0.18, s * 1.3, s * 0.36);
       ctx.beginPath();
       ctx.ellipse(s * 0.2, 0, s * 0.45, s * 0.3, 0, 0, Math.PI * 2);
@@ -132,7 +172,6 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
       ctx.lineTo(0, s);
       ctx.stroke();
       break;
-    }
   }
   ctx.restore();
   if (selected) {
@@ -140,12 +179,25 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, cam: Camera, time: num
     ctx.lineWidth = 1.5;
     ctx.strokeRect(sx - s, sy - s, s * 2, s * 2);
   }
-  if (u.hp < u.maxHp && u.type !== 'heli') {
-    const f = Math.max(0, u.hp / u.maxHp);
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(sx - s * 0.8, sy - s - 6, s * 1.6, 4);
-    ctx.fillStyle = f > 0.5 ? '#6be06b' : f > 0.25 ? '#e0c84f' : '#e05050';
-    ctx.fillRect(sx - s * 0.8, sy - s - 6, s * 1.6 * f, 4);
+  for (let k = 1; k < u.level; k++) {
+    ctx.fillStyle = '#f2c14e';
+    ctx.fillRect(sx + s * 0.6 + 1, sy - s * 0.6 + (k - 1) * 5, 4, 4);
+  }
+  let by = sy - s - 7;
+  if (u.hp < u.maxHp && u.type !== 'heli' && u.type !== 'mines') {
+    const f = u.hp / u.maxHp;
+    bar(ctx, sx - s * 0.8, by, s * 1.6, f, f > 0.5 ? '#6be06b' : f > 0.25 ? '#e0c84f' : '#e05050');
+    by -= 5;
+  }
+  const mag = magazineOf(u);
+  if (Number.isFinite(mag) && u.ammo < mag) {
+    bar(ctx, sx - s * 0.8, by, s * 1.6, u.ammo / mag, '#f2c14e');
+    if (u.ammo <= 0) {
+      ctx.fillStyle = '#ff5a4f';
+      ctx.font = '700 11px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('НЕТ ПАТРОНОВ', sx, by - 6);
+    }
   }
 }
 
@@ -167,17 +219,18 @@ export function drawRange(ctx: CanvasRenderingContext2D, cam: Camera, x: number,
   ctx.setLineDash([]);
 }
 
-export function rangeOf(w: World, type: UnitType, elev = 0): { r: number; rMin: number } {
+export function rangeOf(w: World, type: UnitType, elev = 0, level = 1): { r: number; rMin: number } {
   const u = CFG.units;
   if (type === 'evac') return { r: u.evac.radius, rMin: 0 };
   if (type === 'mortar') return { r: u.mortar.range, rMin: u.mortar.rangeMin };
   if (type === 'medic') return { r: u.medic.healRadius, rMin: u.medic.radius };
   if (type === 'repair') return { r: u.repair.radius, rMin: 0 };
   if (type === 'barracks') return { r: CFG.recruit.guard, rMin: u.barracks.radius };
-  return { r: unitRange(w, type, elev), rMin: 0 };
+  if (type === 'mines') return { r: u.mines.radius, rMin: 0 };
+  return { r: unitRange(w, type, elev, level), rMin: 0 };
 }
 
-/** Above the agents: units, shots, explosions, outbreak markers. */
+/** Above the agents: units, shots, explosions, clouds, outbreak markers. */
 export function drawTop(
   ctx: CanvasRenderingContext2D,
   w: World,
@@ -190,13 +243,25 @@ export function drawTop(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const z = cam.zoom;
 
+  for (const c of w.clouds) {
+    const [sx, sy] = cam.toScreen(c.x, c.y);
+    const r = Math.max(4, c.r * z);
+    ctx.fillStyle =
+      c.kind === 'gas'
+        ? `rgba(200,230,90,${0.14 + 0.06 * Math.sin(now / 300 + c.x)})`
+        : `rgba(255,${120 + Math.round(60 * Math.random())},40,${0.28 + 0.12 * Math.random()})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   for (const e of w.effects) {
     const k = e.t / e.life;
     const [sx, sy] = cam.toScreen(e.x, e.y);
     if (e.kind === 'tracer') {
       const [ex, ey] = cam.toScreen(e.x2, e.y2);
       const lift = (e.h ?? 0) * LEAN * z;
-      ctx.strokeStyle = `rgba(255,230,140,${0.9 * (1 - k)})`;
+      ctx.strokeStyle = `rgba(255,236,160,${0.9 * (1 - k)})`;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.moveTo(sx, sy - lift);
@@ -208,7 +273,7 @@ export function drawTop(
       ctx.arc(sx, sy, Math.max(3, e.r * z * (0.5 + k)), 0, Math.PI * 2);
       ctx.fill();
     } else {
-      ctx.fillStyle = `rgba(120,120,120,${0.25 * (1 - k)})`;
+      ctx.fillStyle = `rgba(90,90,96,${0.3 * (1 - k)})`;
       ctx.beginPath();
       ctx.arc(sx, sy, Math.max(4, e.r * z * (0.8 + k * 0.6)), 0, Math.PI * 2);
       ctx.fill();
@@ -224,6 +289,19 @@ export function drawTop(
     ctx.stroke();
   }
 
+  for (const d of w.drops) {
+    const [sx, sy] = cam.toScreen(d.x, d.y);
+    const lift = d.t * 6;
+    ctx.strokeStyle = '#d8e4ff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 14 - lift, 8, Math.PI, 0);
+    ctx.moveTo(sx - 8, sy - 14 - lift);
+    ctx.lineTo(sx, sy - lift);
+    ctx.lineTo(sx + 8, sy - 14 - lift);
+    ctx.stroke();
+  }
+
   const a = CFG.airstrike;
   for (const s of w.strikes) {
     const [x0, y0] = cam.toScreen(s.x, s.y);
@@ -236,19 +314,16 @@ export function drawTop(
     ctx.lineTo(x1, y1);
     ctx.stroke();
     ctx.setLineDash([]);
-    // bomber silhouette sweeping along the run
     const p = s.dropped > 0 ? s.dropped / a.bombs : 0;
-    const bx = x0 + (x1 - x0) * p;
-    const by = y0 + (y1 - y0) * p;
     ctx.save();
-    ctx.translate(bx, by);
-    ctx.rotate(Math.atan2(s.dy, s.dx));
-    ctx.fillStyle = '#d0d6e0';
+    ctx.translate(x0 + (x1 - x0) * p, y0 + (y1 - y0) * p);
+    ctx.rotate(Math.atan2(y1 - y0, x1 - x0));
+    ctx.fillStyle = '#f2a33a';
     ctx.beginPath();
-    ctx.moveTo(14, 0);
-    ctx.lineTo(-8, -12);
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-8, -14);
     ctx.lineTo(-4, 0);
-    ctx.lineTo(-8, 12);
+    ctx.lineTo(-8, 14);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -257,8 +332,8 @@ export function drawTop(
   for (const u of w.units) {
     if (u.type !== 'evac') continue;
     const [sx, sy] = cam.toScreen(u.x, u.y);
-    ctx.strokeStyle = showSafe ? 'rgba(63,224,200,0.75)' : 'rgba(63,224,200,0.22)';
-    ctx.fillStyle = showSafe ? 'rgba(63,224,200,0.08)' : 'rgba(63,224,200,0.025)';
+    ctx.strokeStyle = showSafe ? ZONE_LINE : 'rgba(150,120,255,0.3)';
+    ctx.fillStyle = showSafe ? 'rgba(126,92,255,0.1)' : 'rgba(126,92,255,0.035)';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 6]);
     ctx.beginPath();
@@ -271,8 +346,8 @@ export function drawTop(
   if (w.phase === 'planning') {
     for (const o of w.outbreak) {
       const [sx, sy] = cam.toScreen(o.x, o.y);
-      ctx.fillStyle = 'rgba(255,60,50,0.07)';
-      ctx.strokeStyle = 'rgba(255,90,79,0.55)';
+      ctx.fillStyle = 'rgba(125,255,90,0.07)';
+      ctx.strokeStyle = 'rgba(125,255,90,0.6)';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([8, 6]);
       ctx.beginPath();
@@ -281,18 +356,18 @@ export function drawTop(
       ctx.stroke();
       ctx.setLineDash([]);
       const pulse = (now / 900) % 1;
-      ctx.strokeStyle = `rgba(120,255,60,${1 - pulse})`;
+      ctx.strokeStyle = `rgba(125,255,90,${1 - pulse})`;
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(sx, sy, 10 + pulse * 40, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = '#7dff4a';
+      ctx.fillStyle = '#7dff5a';
       ctx.beginPath();
       ctx.arc(sx, sy, 6, 0, Math.PI * 2);
       ctx.fill();
-      ctx.font = '700 12px system-ui, sans-serif';
+      ctx.font = '700 12px "IBM Plex Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('ОЧАГ', sx, sy - 18);
+      ctx.fillText('ОЧАГ', sx, sy - 22);
     }
   }
 

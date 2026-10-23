@@ -27,7 +27,7 @@ function showMenu(): void {
     const open = unlocked(i);
     return `<div class="card ${open ? '' : 'locked'}">
       <div class="info"><b>${i + 1}. ${ms.title}</b><p>${ms.brief}</p>
-      <div class="meta num">${ms.population.toLocaleString('ru-RU')} мирных · бюджет $${ms.budget.toLocaleString('ru-RU')} · очагов: ${ms.outbreak.length}</div></div>
+      <div class="meta num">${ms.population.toLocaleString('ru-RU')} мирных · $${ms.budget.toLocaleString('ru-RU')} · очагов: ${ms.outbreak.length}${ms.zombieHp && ms.zombieHp > 1 ? ` · живучесть зомби ×${ms.zombieHp}` : ''}</div></div>
       <div style="text-align:center"><div class="stars">${starStr(progress.stars[ms.id] ?? 0)}</div>
       <button class="btn" data-play="${i}" ${open ? '' : 'disabled'} style="margin-top:8px">${open ? 'Играть' : '🔒'}</button></div>
     </div>`;
@@ -41,9 +41,8 @@ function showMenu(): void {
       <button class="btn ghost" data-up="${id}" ${canUpgrade(progress, id) ? '' : 'disabled'}>${maxed ? 'Макс.' : `★ ${upgradeCost(progress, id)}`}</button></div>`;
   }).join('');
   m.innerHTML = `<div class="wrap">
-    <h1>Zombie <span>Fuckers</span></h1>
-    <div style="color:var(--muted);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px">Нью-Йорк · Мидтаун</div>
-    <p class="lead">Стратегия сдерживания орды на реальной карте Мидтауна Манхэттена. Изучите очаг, расставьте снайперов, турели, миномёты, баррикады и пункты эвакуации — и спасите как можно больше людей.</p>
+    <div class="logo"><img src="./icon.svg" alt="" /><div><h1>Zombie <span>Fuckers</span></h1><div class="sub">Нью-Йорк · Мидтаун · 40.755° N 73.984° W</div></div></div>
+    <p class="lead">Сдерживание орды на реальной карте Мидтауна: 4894 здания из OpenStreetMap с настоящей высотой. Изучите очаг, займите крыши снайперами, перекройте улицы, разверните safe zone и эвакуацию — и спасите как можно больше людей.</p>
     <h2>Миссии</h2>${missions}
     <h2>Усиления · медалей: ${medals(progress)}</h2>
     <p class="lead" style="margin:-4px 0 10px;font-size:13px">Звёзды за миссии — это медали. Победа нужна, чтобы открыть следующую миссию.</p>
@@ -64,6 +63,7 @@ function showMenu(): void {
 }
 
 function play(ms: Mission): void {
+  window.onkeydown = null;
   game?.destroy();
   $('menu').classList.add('hidden');
   $('modal').classList.add('hidden');
@@ -82,25 +82,40 @@ function showResult(ms: Mission, r: GameResult): void {
   const fmt = (n: number) => n.toLocaleString('ru-RU');
   const next = MISSIONS.indexOf(ms) + 1;
   const modal = $('modal');
-  modal.innerHTML = `<div class="box">
-    <h3>${r.won ? 'Заражение остановлено' : 'Мидтаун потерян'}</h3>
+  const KILL_NAMES: Record<string, string> = {
+    sniper: 'Снайперы', garrison: 'Штурмовики', turret: 'Турели', mortar: 'Миномёты', heli: 'Вертолёты',
+    mines: 'Мины', spikes: 'Шипы', airstrike: 'Авиаудары', fire: 'Напалм', recruits: 'Рекруты и десант',
+  };
+  const kills = Object.entries(w.killsBy)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<div class="stat"><span>· ${KILL_NAMES[k] ?? k}</span><span class="num">${fmt(v)}</span></div>`)
+    .join('');
+  modal.innerHTML = `<div class="box ${r.won ? 'win' : ''}">
+    <div class="head">${r.won ? 'Заражение остановлено' : 'Мидтаун потерян'}</div>
+    <div class="inner">
     <div style="color:var(--muted)">${ms.title}</div>
     <div class="big-stars stars">${starStr(r.stars)}</div>
     <div class="stat"><span>Спасено</span><b class="num">${fmt(r.saved)} из ${fmt(r.population)} (${pct}%)</b></div>
     <div class="stat"><span>Эвакуировано</span><span class="num">${fmt(w.stats.evacuated)}</span></div>
     <div class="stat"><span>Заражено</span><span class="num">${fmt(w.stats.infected)}</span></div>
+    <div class="stat"><span>Вылечено</span><span class="num">${fmt(w.stats.cured)}</span></div>
     <div class="stat"><span>Погибло от нашего огня</span><span class="num">${fmt(w.stats.friendlyFire)}</span></div>
     <div class="stat"><span>Уничтожено зомби</span><span class="num">${fmt(w.stats.zombiesKilled)}</span></div>
+    ${kills}
+    <div class="stat"><span>Заработано за убийства</span><span class="num">$${fmt(w.stats.bounty)}</span></div>
     <div class="stat"><span>Время</span><span class="num">${Math.floor(w.time / 60)}:${Math.floor(w.time % 60).toString().padStart(2, '0')}</span></div>
-    <p style="color:var(--muted);font-size:12px">Звёзды: ≥${CFG.stars.map((s) => Math.round(s * 100) + '%').join(' / ')} спасённых и победа.</p>
+    <p style="color:var(--muted);font-size:11px">Звёзды: победа и ≥${CFG.stars.map((s) => Math.round(s * 100) + '%').join(' / ')} спасённых.</p>
     <div class="actions">
       <button class="btn ghost" id="r-menu">Миссии</button>
-      <button class="btn ghost" id="r-again">Ещё раз</button>
+      <button class="btn ghost" id="r-again">[R] Ещё раз</button>
       ${r.won && next < MISSIONS.length ? '<button class="btn" id="r-next">Дальше</button>' : ''}
-    </div></div>`;
+    </div></div></div>`;
   modal.classList.remove('hidden');
   $('r-menu').onclick = showMenu;
   $('r-again').onclick = () => play(ms);
+  window.onkeydown = (e) => {
+    if (e.key.toLowerCase() === 'r' || e.key.toLowerCase() === 'к') play(ms);
+  };
   const nb = document.getElementById('r-next');
   if (nb) nb.onclick = () => play(MISSIONS[next]);
 }

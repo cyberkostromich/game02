@@ -7,7 +7,7 @@ test('menu → mission → deploy → outbreak runs without errors', async ({ pa
 
   await page.goto('/');
   await page.click('[data-play="0"]');
-  await expect(page.locator('#m-title')).toHaveText('Ночь на Таймс-сквер');
+  await expect(page.locator('#stats .title')).toHaveText('Ночь на Таймс-сквер');
 
   // the outbreak zone is closed during planning: a tap in its centre is refused
   await page.click('[data-tool="sniper"]');
@@ -19,8 +19,8 @@ test('menu → mission → deploy → outbreak runs without errors', async ({ pa
   await page.click('#btn-start');
   await page.click('[data-s="4"]');
   await page.waitForTimeout(4000);
-  await expect(page.locator('#m-phase')).toContainText('Вспышка');
-  const zombies = Number((await page.locator('#c-zom').textContent())!.replace(/\D/g, ''));
+  await expect(page.locator('#stats .phase')).toContainText('ВСПЫШКА');
+  const zombies = Number((await page.locator('#stats .c-zom b').textContent())!.replace(/\D/g, ''));
   expect(zombies).toBeGreaterThan(0);
   expect(errors).toEqual([]);
 });

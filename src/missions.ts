@@ -9,6 +9,8 @@ export interface Mission {
   seed: number;
   /** outbreak origins by landmark name: visible zombies + hidden carriers within r */
   outbreak: { at: string; n: number; infected: number; r: number }[];
+  /** hits a zombie takes (grows in later scenarios, as in the original) */
+  zombieHp?: number;
   /** extra crowds around landmarks */
   crowds?: { at: string; n: number; r: number }[];
 }
@@ -51,6 +53,7 @@ export const MISSIONS: Mission[] = [
     population: 26000,
     budget: 3800,
     seed: 41,
+    zombieHp: 2,
     outbreak: [
       { at: 'Брайант-парк', n: 10, infected: 90, r: 110 },
       { at: 'Эмпайр-стейт-билдинг', n: 10, infected: 90, r: 110 },
@@ -63,6 +66,7 @@ export const MISSIONS: Mission[] = [
     population: 30000,
     budget: 5000,
     seed: 53,
+    zombieHp: 2,
     outbreak: [
       { at: 'Автовокзал Порт-Аторити', n: 8, infected: 60, r: 100 },
       { at: 'Рокфеллер-центр', n: 8, infected: 60, r: 100 },

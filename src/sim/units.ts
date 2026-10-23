@@ -1,6 +1,6 @@
 import { CFG, type UnitType } from '../config';
 import { BUILDING, OPEN } from './grid';
-import { updateSpecialist, inSafeZone } from './support';
+import { inRect, inSafeZone, updateSpecialist, zoneIntact } from './support';
 import { FREE, CIV, ZOMBIE, type World } from './world';
 
 export interface Unit {
@@ -17,6 +17,38 @@ export interface Unit {
   ty: number;
   aim: number; // last firing direction, for rendering
   elev: number; // m above the street (roof or window)
+  level: number;
+  ammo: number; // shots (or mine charges) left; Infinity = no limit
+  kills: number;
+}
+
+/** Fire-rate / throughput multiplier from the unit's level. */
+export function levelRate(u: Unit): number {
+  return 1 + CFG.levels.rate * (u.level - 1);
+}
+
+export function levelUpCost(u: Unit): number {
+  return Math.round(CFG.units[u.type].cost * CFG.levels.costShare * u.level);
+}
+
+export function canLevelUp(u: Unit): boolean {
+  return u.level < CFG.levels.max && u.type !== 'heli' && u.type !== 'mines';
+}
+
+export function levelUp(w: World, u: Unit): boolean {
+  const cost = levelUpCost(u);
+  if (!canLevelUp(u) || w.budget < cost) return false;
+  w.budget -= cost;
+  u.level++;
+  const add = CFG.units[u.type].hp * CFG.levels.hp;
+  u.maxHp += add;
+  u.hp += add;
+  return true;
+}
+
+export function magazineOf(u: Unit): number {
+  const d = CFG.units[u.type];
+  return 'magazine' in d ? d.magazine : Infinity;
 }
 
 /** Units that live inside a building; the rest stand on the street. */
@@ -30,6 +62,7 @@ export interface Shell {
   t: number;
   r: number;
   flight: number;
+  by: string; // kill credit
 }
 
 export interface Strike {
@@ -82,39 +115,42 @@ export function lineOfSight(w: World, x0: number, y0: number, h0: number, x1: nu
   return true;
 }
 
-export function unitRange(w: World, type: UnitType, elev = 0): number {
+export function unitRange(w: World, type: UnitType, elev = 0, level = 1): number {
   const d = CFG.units[type];
-  const r = 'range' in d ? d.range : 0;
+  const r = ('range' in d ? d.range : 0) * (1 + CFG.levels.range * (level - 1));
   if (type !== 'sniper') return r;
   const s = CFG.sight;
   return r * w.mods.sniperRange + Math.min(elev * s.sniperRoofBonus, s.sniperRoofBonusMax);
 }
 
-function boom(w: World, x: number, y: number, r: number): void {
+function boom(w: World, x: number, y: number, r: number, by: string): void {
+  w.sfx.push({ k: 'boom', x, y });
   w.effects.push({ kind: 'boom', x, y, x2: x, y2: y, r, t: 0, life: 0.6 });
   w.effects.push({ kind: 'smoke', x, y, x2: x, y2: y, r: r * 1.4, t: 0, life: 4 });
   const kill = (i: number) => {
     if (w.kind[i] === FREE) return;
     const d = Math.hypot(w.x[i] - x, w.y[i] - y);
-    if (d < r * 0.75 || w.rng.next() < 0.7) w.kill(i);
+    if (d < r * 0.75 || w.rng.next() < 0.7) w.kill(i, by);
   };
   w.zomHash.forEachInRadius(w.x, w.y, x, y, r, kill);
   w.civHash.forEachInRadius(w.x, w.y, x, y, r, kill);
   // explosions also wreck barricades and units caught in them
-  for (const u of w.units) if (u.type !== 'heli' && Math.hypot(u.x - x, u.y - y) < r * 0.7) u.hp -= 80;
+  for (const u of w.units) if (u.type !== 'heli' && u.type !== 'mines' && Math.hypot(u.x - x, u.y - y) < r * 0.7) u.hp -= 80;
 }
 
 function fireAt(w: World, u: Unit, range: number, reload: number, accuracy: number, los: boolean): void {
-  if (u.cd > 0) return;
+  if (u.cd > 0 || u.ammo <= 0) return;
   const h0 = u.elev + CFG.sight.eye;
   const t = w.zomHash.nearest(w.x, w.y, u.x, u.y, range, 0, (i) =>
     w.kind[i] === ZOMBIE && (!los || lineOfSight(w, u.x, u.y, h0, w.x[i], w.y[i])),
   );
   if (t < 0) return;
-  u.cd = reload;
+  u.cd = reload / levelRate(u);
+  u.ammo--;
   u.aim = Math.atan2(w.y[t] - u.y, w.x[t] - u.x);
+  w.sfx.push({ k: u.type === 'sniper' ? 'sniper' : 'gun', x: u.x, y: u.y });
   w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: w.x[t], y2: w.y[t], r: 0, t: 0, life: u.type === 'sniper' ? 0.35 : 0.08, h: u.elev });
-  if (w.rng.next() < accuracy) w.kill(t);
+  if (w.rng.next() < accuracy && w.hit(t, u.type)) u.kills++;
 }
 
 /** Picks the zombie cluster with the most zombies and acceptable civilian risk. */
@@ -153,7 +189,7 @@ function mortarTarget(w: World, u: Unit, blast: number): { x: number; y: number 
 }
 
 function evacuate(w: World, u: Unit, dt: number): void {
-  const rate = CFG.units.evac.rate * w.mods.evacRate;
+  const rate = CFG.units.evac.rate * w.mods.evacRate * levelRate(u);
   u.acc = Math.min(u.acc + rate * dt, rate);
   w.civHash.forEachInRadius(w.x, w.y, u.x, u.y, w.grid.cell * 1.6, (i) => {
     if (u.acc < 1 || w.kind[i] !== CIV) return;
@@ -165,11 +201,24 @@ function evacuate(w: World, u: Unit, dt: number): void {
 
 export function updateUnits(w: World, dt: number): void {
   const before = w.units.length;
-  for (const u of w.units) if (u.hp <= 0) boomQuiet(w, u);
+  for (const u of w.units) if (u.hp <= 0 && u.type !== 'mines') boomQuiet(w, u);
   w.units = w.units.filter((u) => u.hp > 0 && !(u.type === 'heli' && u.age > CFG.units.heli.duration));
   if (w.units.length !== before) {
     w.rebuildUnitAt();
     w.evacDirty = true;
+  }
+
+  // supply: evac points with no zombie at the gate refill magazines in their safe zone
+  const depots = w.units.filter(
+    (u) => u.type === 'evac' && w.zomHash.nearest(w.x, w.y, u.x, u.y, CFG.supply.breachRadius) < 0,
+  );
+  const zone2 = CFG.safeZone.radius ** 2;
+  const intact = w.zones.filter((z) => zoneIntact(w, z));
+  for (const u of w.units) {
+    const mag = magazineOf(u);
+    if (u.ammo >= mag) continue;
+    if (depots.some((d) => (d.x - u.x) ** 2 + (d.y - u.y) ** 2 < zone2) || intact.some((z) => inRect(z, u.x, u.y, 10)))
+      u.ammo = mag;
   }
 
   for (const u of w.units) {
@@ -178,17 +227,17 @@ export function updateUnits(w: World, dt: number): void {
     switch (u.type) {
       case 'sniper': {
         const d = CFG.units.sniper;
-        fireAt(w, u, unitRange(w, 'sniper', u.elev), d.reload, d.accuracy, true);
+        fireAt(w, u, unitRange(w, 'sniper', u.elev, u.level), d.reload, d.accuracy, true);
         break;
       }
       case 'turret': {
         const d = CFG.units.turret;
-        fireAt(w, u, d.range, d.reload / w.mods.turretRate, d.accuracy, true);
+        fireAt(w, u, unitRange(w, 'turret', 0, u.level), d.reload / w.mods.turretRate, d.accuracy, true);
         break;
       }
       case 'garrison': {
         const d = CFG.units.garrison;
-        fireAt(w, u, d.range, d.reload, d.accuracy, true);
+        fireAt(w, u, unitRange(w, 'garrison', 0, u.level), d.reload, d.accuracy, true);
         break;
       }
       case 'heli': {
@@ -205,7 +254,7 @@ export function updateUnits(w: World, dt: number): void {
         break;
       }
       case 'mortar': {
-        if (u.cd > 0) break;
+        if (u.cd > 0 || u.ammo <= 0) break;
         const d = CFG.units.mortar;
         const blast = d.blast * w.mods.mortarBlast;
         const t = mortarTarget(w, u, blast);
@@ -213,15 +262,27 @@ export function updateUnits(w: World, dt: number): void {
           u.cd = 0.5; // re-scan soon
           break;
         }
-        u.cd = d.reload;
+        u.cd = d.reload / levelRate(u);
+        u.ammo--;
         u.aim = Math.atan2(t.y - u.y, t.x - u.x);
-        w.shells.push({ x: t.x, y: t.y, t: d.flight, r: blast, flight: d.flight });
+        w.shells.push({ x: t.x, y: t.y, t: d.flight, r: blast, flight: d.flight, by: 'mortar' });
+        w.sfx.push({ k: 'thump', x: u.x, y: u.y });
         w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: u.x, y2: u.y, r: 0, t: 0, life: 0.2 });
         break;
       }
       case 'evac':
         evacuate(w, u, dt);
         break;
+      case 'mines': {
+        const d = CFG.units.mines;
+        if (u.cd > 0) break;
+        const z = w.zomHash.nearest(w.x, w.y, u.x, u.y, d.radius, 0, (i) => w.kind[i] === ZOMBIE);
+        if (z < 0) break;
+        u.cd = d.reload;
+        boom(w, w.x[z], w.y[z], d.blast, 'mines');
+        if (--u.ammo <= 0) u.hp = 0;
+        break;
+      }
       default:
         updateSpecialist(w, u, dt);
     }
@@ -229,7 +290,7 @@ export function updateUnits(w: World, dt: number): void {
 
   for (const s of w.shells) {
     s.t -= dt;
-    if (s.t <= 0) boom(w, s.x, s.y, s.r);
+    if (s.t <= 0) boom(w, s.x, s.y, s.r, s.by);
   }
   w.shells = w.shells.filter((s) => s.t > 0);
 
@@ -238,7 +299,7 @@ export function updateUnits(w: World, dt: number): void {
     s.t -= dt;
     while (s.t <= 0 && s.dropped < a.bombs) {
       const along = (s.dropped / (a.bombs - 1)) * a.length;
-      boom(w, s.x + s.dx * along, s.y + s.dy * along, s.width / 2);
+      boom(w, s.x + s.dx * along, s.y + s.dy * along, s.width / 2, 'airstrike');
       s.dropped++;
       s.t += a.interval;
     }
@@ -250,6 +311,7 @@ export function updateUnits(w: World, dt: number): void {
 }
 
 function boomQuiet(w: World, u: Unit): void {
+  w.sfx.push({ k: 'boom', x: u.x, y: u.y });
   w.effects.push({ kind: 'boom', x: u.x, y: u.y, x2: u.x, y2: u.y, r: 6, t: 0, life: 0.6 });
 }
 
@@ -294,18 +356,19 @@ export function callAirstrike(w: World, x0: number, y0: number, x1: number, y1: 
   if (w.phase !== 'battle' || w.budget < a.cost) return false;
   const len = Math.hypot(x1 - x0, y1 - y0) || 1;
   w.budget -= a.cost;
+  w.sfx.push({ k: 'plane', x: x0, y: y0 });
   w.strikes.push({ x: x0, y: y0, dx: (x1 - x0) / len, dy: (y1 - y0) / len, t: a.delay, dropped: 0, width: a.width * w.mods.airstrikeWidth });
   return true;
 }
 
-/** Grid cells along a dragged barricade line, clipped to the max length. */
-export function barricadeCells(w: World, x0: number, y0: number, x1: number, y1: number): number[] {
+/** Grid cells along a dragged line, clipped to `max` cells. */
+export function barricadeCells(w: World, x0: number, y0: number, x1: number, y1: number, max: number = CFG.barricade.maxCells): number[] {
   const g = w.grid;
   const len = Math.hypot(x1 - x0, y1 - y0);
   const n = Math.max(1, Math.ceil(len / (g.cell * 0.5)));
   const out: number[] = [];
   const add = (c: number) => {
-    if (g.solid[c] !== OPEN || g.barricade[c] > 0 || out.includes(c) || out.length >= CFG.barricade.maxCells) return;
+    if (g.solid[c] !== OPEN || g.barricade[c] > 0 || out.includes(c) || out.length >= max) return;
     out.push(c);
   };
   let prev = -1;

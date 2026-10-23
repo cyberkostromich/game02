@@ -8,16 +8,19 @@ export interface InputHandlers {
   line(x0: number, y0: number, x1: number, y1: number, done: boolean): void;
   hover(wx: number, wy: number): void;
   cameraMoved(): void;
+  rotate(dir: 1 | -1): void;
 }
 
 const TAP_SLOP = 8;
+const TWIST = 0.6; // rad of two-finger twist for a quarter turn
 
 export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): void {
   const pts = new Map<number, { x: number; y: number }>();
   let mode: 'none' | 'tap' | 'pan' | 'line' | 'pinch' = 'none';
   let start = { x: 0, y: 0 };
   let lineStart = { x: 0, y: 0 };
-  let pinch = { d: 1, cx: 0, cy: 0 };
+  let pinch = { d: 1, cx: 0, cy: 0, a: 0 };
+  let twist = 0;
 
   const local = (e: PointerEvent) => {
     const r = el.getBoundingClientRect();
@@ -25,7 +28,7 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
   };
   const pinchState = () => {
     const [a, b] = [...pts.values()];
-    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, a: Math.atan2(b.y - a.y, b.x - a.x) };
   };
 
   el.addEventListener('pointerdown', (e) => {
@@ -36,6 +39,7 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
       if (mode === 'line') h.line(lineStart.x, lineStart.y, lineStart.x, lineStart.y, false);
       mode = 'pinch';
       pinch = pinchState();
+      twist = 0;
       return;
     }
     if (pts.size > 2) return;
@@ -59,9 +63,16 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
     pts.set(e.pointerId, p);
     if (mode === 'pinch' && pts.size === 2) {
       const now = pinchState();
-      cam.x -= (now.cx - pinch.cx) / cam.zoom;
-      cam.y -= (now.cy - pinch.cy) / cam.zoom;
+      cam.panBy(now.cx - pinch.cx, now.cy - pinch.cy);
       cam.zoomAt(now.cx, now.cy, now.d / pinch.d);
+      let da = now.a - pinch.a;
+      if (da > Math.PI) da -= 2 * Math.PI;
+      if (da < -Math.PI) da += 2 * Math.PI;
+      twist += da;
+      if (Math.abs(twist) > TWIST) {
+        h.rotate(twist > 0 ? 1 : -1);
+        twist = 0;
+      }
       pinch = now;
       h.cameraMoved();
     } else if (mode === 'line') {
@@ -70,8 +81,7 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
     } else if (mode === 'tap' || mode === 'pan') {
       if (mode === 'tap' && Math.hypot(p.x - start.x, p.y - start.y) > TAP_SLOP) mode = 'pan';
       if (mode === 'pan') {
-        cam.x -= (p.x - prev.x) / cam.zoom;
-        cam.y -= (p.y - prev.y) / cam.zoom;
+        cam.panBy(p.x - prev.x, p.y - prev.y);
         h.cameraMoved();
       }
     }

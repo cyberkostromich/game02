@@ -1,9 +1,11 @@
-import { CFG, type UnitType, type Upgrades } from '../config';
+import { CFG, type AbilityId, type UnitType, type Upgrades } from '../config';
+import type { SfxEvent } from '../audio';
+import { updateAbilities, type Cloud, type Drop } from './abilities';
 import { FieldSolver, INF } from './field';
 import { BUILDING, Grid, OPEN } from './grid';
 import { SpatialHash } from './hash';
 import { Rng } from './rng';
-import { updateRecruits } from './support';
+import { inRect, updateRecruits, type Zone } from './support';
 import { IN_BUILDING, updateUnits, type Effect, type Strike, type Shell, type Unit } from './units';
 
 // Agent kinds
@@ -11,7 +13,7 @@ export const FREE = 0;
 export const CIV = 1;
 export const INFECTED = 2; // bitten, still looks and acts human until it turns
 export const ZOMBIE = 3;
-export const RECRUIT = 4; // civilian armed by a barracks
+export const RECRUIT = 4; // armed civilian or paratrooper
 
 export type Phase = 'planning' | 'battle' | 'won' | 'lost';
 
@@ -23,6 +25,7 @@ export interface Stats {
   zombiesKilled: number;
   cured: number;
   recruited: number;
+  bounty: number; // $ earned for kills
 }
 
 export interface Mods {
@@ -60,13 +63,18 @@ export class World {
   readonly timer: Float32Array; // bite cooldown / incubation / panic
   readonly speed: Float32Array;
   readonly heading: Float32Array;
-  readonly home: Int32Array; // recruit -> barracks unit id
+  readonly home: Int32Array; // recruit -> barracks unit id; 0 = free squad that hunts
+  readonly zhp: Uint8Array; // zombie hit points
+  zombieHp = 1;
+  readonly spikes: Uint8Array; // cells with spike strips
+  spikeCells: number[] = [];
 
   readonly civHash: SpatialHash; // civilians, carriers, recruits
   readonly zomHash: SpatialHash;
   readonly crowd: Uint16Array;
   readonly preyField: Uint16Array;
   readonly zombieField: Uint16Array;
+  /** distance to refuge: evac points and drawn safe zones (0 inside) */
   readonly evacField: Uint16Array;
   readonly unitAt: Int32Array; // cell -> unit id + 1 that zombies can hit there
   private readonly solver: FieldSolver;
@@ -82,6 +90,12 @@ export class World {
   strikes: Strike[] = [];
   effects: Effect[] = [];
   splats: { x: number; y: number; z: boolean }[] = [];
+  zones: Zone[] = [];
+  clouds: Cloud[] = [];
+  drops: Drop[] = [];
+  cooldowns: Record<AbilityId, number> = { gas: 0, fire: 0, para: 0, arms: 0 };
+  killsBy: Record<string, number> = {};
+  sfx: SfxEvent[] = []; // sound events for the renderer; drained every frame
   nextUnitId = 1;
 
   phase: Phase = 'planning';
@@ -90,7 +104,7 @@ export class World {
   budget = 0;
   airstrikes = 0;
   counts = { civ: 0, infected: 0, zombie: 0, recruit: 0 };
-  stats: Stats = { population: 0, evacuated: 0, infected: 0, friendlyFire: 0, zombiesKilled: 0, cured: 0, recruited: 0 };
+  stats: Stats = { population: 0, evacuated: 0, infected: 0, friendlyFire: 0, zombiesKilled: 0, cured: 0, recruited: 0, bounty: 0 };
   mods: Mods;
   outbreak: { x: number; y: number; n: number; infected: number; r: number }[] = [];
 
@@ -110,12 +124,14 @@ export class World {
     this.speed = new Float32Array(capacity);
     this.heading = new Float32Array(capacity);
     this.home = new Int32Array(capacity);
+    this.zhp = new Uint8Array(capacity);
     const cells = grid.w * grid.h;
     this.crowd = new Uint16Array(cells);
     this.preyField = new Uint16Array(cells).fill(INF);
     this.zombieField = new Uint16Array(cells).fill(INF);
     this.evacField = new Uint16Array(cells).fill(INF);
     this.unitAt = new Int32Array(cells);
+    this.spikes = new Uint8Array(cells);
     this.srcBuf = new Int32Array(cells);
     this.solver = new FieldSolver(grid);
     this.civHash = new SpatialHash(widthM, heightM, CFG.sim.hashCell, capacity);
@@ -133,12 +149,17 @@ export class World {
     this.y[i] = this.py[i] = y;
     this.kind[i] = kind;
     this.timer[i] = 0;
+    this.home[i] = 0;
+    this.zhp[i] = this.zombieHp;
     this.heading[i] = this.rng.next() * Math.PI * 2;
     this.speed[i] =
-      kind === ZOMBIE
-        ? this.rng.range(CFG.zombie.speedMin, CFG.zombie.speedMax)
-        : this.rng.range(CFG.civilian.speedSpread[0], CFG.civilian.speedSpread[1]);
+      kind === ZOMBIE ? this.zombieSpeed() : this.rng.range(CFG.civilian.speedSpread[0], CFG.civilian.speedSpread[1]);
     return i;
+  }
+
+  zombieSpeed(): number {
+    const z = CFG.zombie;
+    return this.rng.next() < z.runnerShare ? z.runnerSpeed : this.rng.range(z.speedMin, z.speedMax);
   }
 
   /** Scatters civilians over open cells. */
@@ -198,11 +219,26 @@ export class World {
     this.preyT = this.zomT = this.evacT = 0;
   }
 
-  kill(i: number, splat = true): void {
-    if (splat) this.splats.push({ x: this.x[i], y: this.y[i], z: this.kind[i] === ZOMBIE });
-    if (this.kind[i] === ZOMBIE) this.stats.zombiesKilled++;
-    else this.stats.friendlyFire++;
+  /** Removes agent i; `by` credits a zombie kill to a unit type or ability. */
+  kill(i: number, by = ''): void {
+    this.splats.push({ x: this.x[i], y: this.y[i], z: this.kind[i] === ZOMBIE });
+    if (this.kind[i] === ZOMBIE) {
+      this.stats.zombiesKilled++;
+      this.budget += CFG.bounty;
+      this.stats.bounty += CFG.bounty;
+      if (by) this.killsBy[by] = (this.killsBy[by] ?? 0) + 1;
+    } else this.stats.friendlyFire++;
     this.kind[i] = FREE;
+  }
+
+  /** One point of damage: tougher zombies survive a hit. Returns true on a kill. */
+  hit(i: number, by: string): boolean {
+    if (this.kind[i] === ZOMBIE && this.zhp[i] > 1) {
+      this.zhp[i]--;
+      return false;
+    }
+    this.kill(i, by);
+    return true;
   }
 
   // ---------- units & barricades ----------
@@ -213,7 +249,11 @@ export class World {
     const roof = this.grid.solid[c] === BUILDING ? this.grid.height[c] : 0;
     // snipers climb to the roof; squads in a building fire from low windows
     const elev = type === 'sniper' ? roof : Math.min(roof, 8);
-    const u: Unit = { id: this.nextUnitId++, type, x, y, hp: def.hp, maxHp: def.hp, cd: 0, acc: 0, age: 0, tx: x, ty: y, aim: -Math.PI / 2, elev };
+    const ammo = 'magazine' in def ? def.magazine : 'charges' in def ? def.charges : Infinity;
+    const u: Unit = {
+      id: this.nextUnitId++, type, x, y, hp: def.hp, maxHp: def.hp, cd: 0, acc: 0, age: 0,
+      tx: x, ty: y, aim: -Math.PI / 2, elev, level: 1, ammo, kills: 0,
+    };
     this.units.push(u);
     if (type === 'evac') this.evacDirty = true;
     this.rebuildUnitAt();
@@ -231,7 +271,7 @@ export class World {
     const g = this.grid;
     this.unitAt.fill(0);
     for (const u of this.units) {
-      if (u.type === 'heli') continue;
+      if (u.type === 'heli' || u.type === 'mines') continue; // out of reach / not a target
       const c = g.idx(u.x, u.y);
       // zombies reach a building unit through the street cells at its doors
       const r = IN_BUILDING.has(u.type) || g.solid[c] === BUILDING ? 2 : 0;
@@ -251,12 +291,26 @@ export class World {
     }
   }
 
+  addZone(z: Zone): void {
+    this.zones.push(z);
+    this.evacDirty = true;
+  }
+
+  placeSpikes(cells: number[]): void {
+    for (const c of cells) {
+      if (!this.grid.open(c) || this.spikes[c]) continue;
+      this.spikes[c] = 1;
+      this.spikeCells.push(c);
+    }
+  }
+
   // ---------- simulation ----------
 
   tick(dt: number): void {
     if (this.phase !== 'battle') return;
     this.time += dt;
     this.tickNo++;
+    if (this.sfx.length > 400) this.sfx.length = 0; // nobody is listening
     const n = this.n;
     this.px.set(this.x.subarray(0, n));
     this.py.set(this.y.subarray(0, n));
@@ -272,8 +326,16 @@ export class World {
       const dy = ty - this.y[i];
       const len = Math.hypot(dx, dy) || 1;
       if (!this.tryMove(i, (dx / len) * dist, (dy / len) * dist, false)) this.wander(i, dist, false);
+    }, (i, dist) => {
+      // free squads walk down the zombie-proximity field, around buildings
+      const zf = this.zombieField;
+      const c = this.grid.idx(this.x[i], this.y[i]);
+      const to = zf[c] < INF ? this.bestNeighbour(c, (nn) => zf[nn], false) : -1;
+      if (to >= 0) this.stepTowards(i, to, dist, false);
+      else this.wander(i, dist * 0.5, false);
     });
     updateUnits(this, dt);
+    updateAbilities(this, dt);
     this.recount();
     if (this.counts.zombie === 0 && this.counts.infected === 0 && this.strikes.length === 0) this.phase = 'won';
     else if (this.saved() < this.stats.population * CFG.lostBelow) this.phase = 'lost';
@@ -316,7 +378,11 @@ export class World {
       this.evacDirty = false;
       let k = 0;
       for (const u of this.units) if (u.type === 'evac') src[k++] = g.idx(u.x, u.y);
-      this.solver.solve(src, k, this.evacField, { cap: Math.ceil((CFG.units.evac.radius / g.cell) * 2) });
+      for (const z of this.zones)
+        for (let y = z.y0 + g.cell / 2; y < z.y1; y += g.cell)
+          for (let x = z.x0 + g.cell / 2; x < z.x1; x += g.cell) src[k++] = g.idx(x, y);
+      const reach = Math.max(CFG.units.evac.radius, CFG.safeZone.attract);
+      this.solver.solve(src, k, this.evacField, { cap: Math.ceil((reach / g.cell) * 2) });
     }
   }
 
@@ -402,7 +468,8 @@ export class World {
         this.timer[i] -= dt;
         if (this.timer[i] <= 0) {
           kind[i] = ZOMBIE;
-          this.speed[i] = this.rng.range(CFG.zombie.speedMin, CFG.zombie.speedMax);
+          this.zhp[i] = this.zombieHp;
+          this.speed[i] = this.zombieSpeed();
           this.timer[i] = 0;
           continue;
         }
@@ -411,8 +478,19 @@ export class World {
       const threatened = zf[c] < panicD;
       const run = threatened || ef[c] < INF;
       const v = (run ? cv.run : cv.walk) * this.speed[i] * dt;
-      if (ef[c] < INF) {
-        // head to evacuation, avoiding zombies on the way
+      if (ef[c] === 0 && this.zones.length && this.zones.some((z) => inRect(z, this.x[i], this.y[i]))) {
+        // sheltering: mill about but stay inside the zone
+        if ((i & 3) === phase) {
+          const h = (this.heading[i] += this.rng.range(-0.6, 0.6));
+          const nx = this.x[i] + Math.cos(h) * v;
+          const ny = this.y[i] + Math.sin(h) * v;
+          if (ef[grid.idx(nx, ny)] === 0 && grid.open(grid.idx(nx, ny))) {
+            this.x[i] = nx;
+            this.y[i] = ny;
+          } else this.heading[i] += Math.PI;
+        }
+      } else if (ef[c] < INF) {
+        // head to refuge, avoiding zombies on the way
         const to = this.bestNeighbour(c, (nn) => ef[nn] + (zf[nn] < 6 ? (6 - zf[nn]) * 6 : 0) + crowd[nn] * 2, false);
         if (to >= 0) this.stepTowards(i, to, v, false);
         else this.wander(i, v * 0.3, false);
@@ -431,11 +509,18 @@ export class World {
     const z = CFG.zombie;
     const bite2 = z.biteRange * z.biteRange;
     const cw = z.crowdWeight;
+    const gas = this.clouds.filter((q) => q.kind === 'gas');
+    const sp = CFG.spikes;
     for (let i = 0; i < this.n; i++) {
       if (kind[i] !== ZOMBIE) continue;
       if (this.timer[i] > 0) this.timer[i] -= dt;
+      if (gas.length && gas.some((q) => (q.x - x[i]) ** 2 + (q.y - y[i]) ** 2 < q.r * q.r)) continue; // frozen
       const c = grid.idx(x[i], y[i]);
-      const v = this.speed[i] * dt;
+      let v = this.speed[i] * dt;
+      if (this.spikes[c]) {
+        v *= sp.slow;
+        if (this.rng.next() < sp.killRate * dt && this.hit(i, 'spikes')) continue;
+      }
 
       // attack a unit standing here
       const uid = this.unitAt[c];
@@ -458,6 +543,7 @@ export class World {
             if (this.timer[i] <= 0) {
               kind[t] = INFECTED;
               this.timer[t] = this.rng.range(z.incubationMin, z.incubationMax);
+              if (this.rng.next() < 0.3) this.sfx.push({ k: 'groan', x: x[i], y: y[i] });
               this.stats.infected++;
               this.timer[i] = z.biteCooldown;
             }
