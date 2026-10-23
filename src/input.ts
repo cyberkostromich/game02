@@ -8,11 +8,11 @@ export interface InputHandlers {
   line(x0: number, y0: number, x1: number, y1: number, done: boolean): void;
   hover(wx: number, wy: number): void;
   cameraMoved(): void;
-  rotate(dir: 1 | -1): void;
+  rotate(stepDeg: number): void;
 }
 
 const TAP_SLOP = 8;
-const TWIST = 0.6; // rad of two-finger twist for a quarter turn
+const TWIST = 0.26; // rad of two-finger twist per 15° step
 
 export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): void {
   const pts = new Map<number, { x: number; y: number }>();
@@ -70,8 +70,8 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
       if (da < -Math.PI) da += 2 * Math.PI;
       twist += da;
       if (Math.abs(twist) > TWIST) {
-        h.rotate(twist > 0 ? 1 : -1);
-        twist = 0;
+        h.rotate(twist > 0 ? 15 : -15);
+        twist -= Math.sign(twist) * TWIST;
       }
       pinch = now;
       h.cameraMoved();

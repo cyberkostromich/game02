@@ -20,7 +20,12 @@ export interface Unit {
   level: number;
   ammo: number; // shots (or mine charges) left; Infinity = no limit
   kills: number;
+  moving: boolean;
+  route: Uint16Array | null; // distance field to the march destination
+  dest: { x: number; y: number; inside: boolean } | null;
 }
+
+export const MOVABLE: ReadonlySet<UnitType> = new Set(['sniper', 'garrison', 'turret', 'mortar']);
 
 /** Fire-rate / throughput multiplier from the unit's level. */
 export function levelRate(u: Unit): number {
@@ -76,7 +81,7 @@ export interface Strike {
 }
 
 export interface Effect {
-  kind: 'tracer' | 'boom' | 'smoke';
+  kind: 'tracer' | 'boom' | 'smoke' | 'evac';
   x: number;
   y: number;
   x2: number;
@@ -191,11 +196,13 @@ function mortarTarget(w: World, u: Unit, blast: number): { x: number; y: number 
 function evacuate(w: World, u: Unit, dt: number): void {
   const rate = CFG.units.evac.rate * w.mods.evacRate * levelRate(u);
   u.acc = Math.min(u.acc + rate * dt, rate);
-  w.civHash.forEachInRadius(w.x, w.y, u.x, u.y, w.grid.cell * 1.6, (i) => {
+  w.civHash.forEachInRadius(w.x, w.y, u.x, u.y, CFG.units.evac.pickup, (i) => {
     if (u.acc < 1 || w.kind[i] !== CIV) return;
     u.acc -= 1;
     w.kind[i] = FREE;
     w.stats.evacuated++;
+    u.kills++; // evac points count people taken out
+    w.effects.push({ kind: 'evac', x: w.x[i], y: w.y[i], x2: u.x, y2: u.y, r: 0, t: 0, life: 1.2 });
   });
 }
 
@@ -224,6 +231,10 @@ export function updateUnits(w: World, dt: number): void {
   for (const u of w.units) {
     u.age += dt;
     u.cd -= dt;
+    if (u.moving) {
+      w.marchStep(u, dt);
+      continue;
+    }
     switch (u.type) {
       case 'sniper': {
         const d = CFG.units.sniper;
@@ -315,14 +326,30 @@ function boomQuiet(w: World, u: Unit): void {
   w.effects.push({ kind: 'boom', x: u.x, y: u.y, x2: u.x, y2: u.y, r: 6, t: 0, life: 0.6 });
 }
 
-function nearStreet(w: World, c: number): boolean {
+/** Open cells closest to building cell c (its "doors"), searched in square rings. */
+export function doorsOf(w: World, c: number, maxRing = DOOR_RING): number[] {
   const g = w.grid;
-  for (let dy = -2; dy <= 2; dy++)
-    for (let dx = -2; dx <= 2; dx++) {
-      const n = c + dy * g.w + dx;
-      if (n >= 0 && n < g.solid.length && g.solid[n] === OPEN) return true;
-    }
-  return false;
+  const cx = c % g.w;
+  const cy = Math.floor(c / g.w);
+  for (let r = 1; r <= maxRing; r++) {
+    const out: number[] = [];
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = cx + dx;
+        const y = cy + dy;
+        if (x < 0 || y < 0 || x >= g.w || y >= g.h) continue;
+        if (g.solid[y * g.w + x] === OPEN) out.push(y * g.w + x);
+      }
+    if (out.length) return out;
+  }
+  return [];
+}
+
+const DOOR_RING = 10; // cells: building units may sit up to ~40 m from a street
+
+function nearStreet(w: World, c: number): boolean {
+  return doorsOf(w, c).length > 0;
 }
 
 /**

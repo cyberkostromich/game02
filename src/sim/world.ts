@@ -6,7 +6,7 @@ import { BUILDING, Grid, OPEN } from './grid';
 import { SpatialHash } from './hash';
 import { Rng } from './rng';
 import { inRect, updateRecruits, type Zone } from './support';
-import { IN_BUILDING, updateUnits, type Effect, type Strike, type Shell, type Unit } from './units';
+import { doorsOf, IN_BUILDING, MOVABLE, updateUnits, type Effect, type Strike, type Shell, type Unit } from './units';
 
 // Agent kinds
 export const FREE = 0;
@@ -74,8 +74,10 @@ export class World {
   readonly crowd: Uint16Array;
   readonly preyField: Uint16Array;
   readonly zombieField: Uint16Array;
-  /** distance to refuge: evac points and drawn safe zones (0 inside) */
+  /** distance to the nearest evacuation point (within its radius) */
   readonly evacField: Uint16Array;
+  /** distance to the nearest drawn safe zone (0 inside) */
+  readonly shelterField: Uint16Array;
   readonly unitAt: Int32Array; // cell -> unit id + 1 that zombies can hit there
   private readonly solver: FieldSolver;
   private readonly srcBuf: Int32Array;
@@ -96,6 +98,7 @@ export class World {
   cooldowns: Record<AbilityId, number> = { gas: 0, fire: 0, para: 0, arms: 0 };
   killsBy: Record<string, number> = {};
   sfx: SfxEvent[] = []; // sound events for the renderer; drained every frame
+  moveMarks: { x: number; y: number; t: number }[] = []; // UI: where a march was ordered
   nextUnitId = 1;
 
   phase: Phase = 'planning';
@@ -130,6 +133,7 @@ export class World {
     this.preyField = new Uint16Array(cells).fill(INF);
     this.zombieField = new Uint16Array(cells).fill(INF);
     this.evacField = new Uint16Array(cells).fill(INF);
+    this.shelterField = new Uint16Array(cells).fill(INF);
     this.unitAt = new Int32Array(cells);
     this.spikes = new Uint8Array(cells);
     this.srcBuf = new Int32Array(cells);
@@ -252,7 +256,7 @@ export class World {
     const ammo = 'magazine' in def ? def.magazine : 'charges' in def ? def.charges : Infinity;
     const u: Unit = {
       id: this.nextUnitId++, type, x, y, hp: def.hp, maxHp: def.hp, cd: 0, acc: 0, age: 0,
-      tx: x, ty: y, aim: -Math.PI / 2, elev, level: 1, ammo, kills: 0,
+      tx: x, ty: y, aim: -Math.PI / 2, elev, level: 1, ammo, kills: 0, moving: false, route: null, dest: null,
     };
     this.units.push(u);
     if (type === 'evac') this.evacDirty = true;
@@ -273,10 +277,14 @@ export class World {
     for (const u of this.units) {
       if (u.type === 'heli' || u.type === 'mines') continue; // out of reach / not a target
       const c = g.idx(u.x, u.y);
-      // zombies reach a building unit through the street cells at its doors
-      const r = IN_BUILDING.has(u.type) || g.solid[c] === BUILDING ? 2 : 0;
-      for (let dy = -r - 1; dy <= r + 1; dy++)
-        for (let dx = -r - 1; dx <= r + 1; dx++) {
+      if (u.moving) continue; // marching units are hit where they stand, below
+      if (IN_BUILDING.has(u.type) || g.solid[c] === BUILDING) {
+        // zombies reach a building unit through the street cells at its doors
+        for (const d of doorsOf(this, c)) this.unitAt[d] = u.id;
+        continue;
+      }
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
           const n = c + dy * g.w + dx;
           if (n >= 0 && n < g.w * g.h && g.solid[n] === OPEN) this.unitAt[n] = u.id;
         }
@@ -294,6 +302,80 @@ export class World {
   addZone(z: Zone): void {
     this.zones.push(z);
     this.evacDirty = true;
+  }
+
+  /**
+   * Orders a unit to march to (x, y) along the streets. A building target is
+   * entered through its nearest door. Returns false if unreachable.
+   */
+  orderMove(u: Unit, x: number, y: number): boolean {
+    if (!MOVABLE.has(u.type)) return false;
+    const g = this.grid;
+    const c = g.idx(x, y);
+    const inside = g.solid[c] === BUILDING;
+    const goals = inside ? doorsOf(this, c) : g.solid[c] === OPEN ? [c] : [];
+    if (!goals.length) return false;
+    const route = u.route ?? new Uint16Array(g.w * g.h);
+    this.solver.solve(goals, goals.length, route, { cap: Math.ceil((CFG.move.maxPath / g.cell) * 2) });
+    let start = g.idx(u.x, u.y);
+    if (g.solid[start] !== OPEN) {
+      const doors = doorsOf(this, start);
+      if (!doors.length) return false;
+      start = doors.reduce((a, b) => (route[b] < route[a] ? b : a));
+      if (route[start] >= INF) return false;
+      u.x = g.cx(start); // step out of the building onto the street
+      u.y = g.cy(start);
+    } else if (route[start] >= INF) return false;
+    u.route = route;
+    u.dest = { x, y, inside };
+    u.moving = true;
+    u.elev = 0;
+    this.rebuildUnitAt();
+    return true;
+  }
+
+  /** Planning phase: redeploy instantly. */
+  relocate(u: Unit, x: number, y: number): void {
+    const g = this.grid;
+    const c = g.idx(x, y);
+    const roof = g.solid[c] === BUILDING ? g.height[c] : 0;
+    u.x = x;
+    u.y = y;
+    u.elev = u.type === 'sniper' ? roof : Math.min(roof, 8);
+    this.rebuildUnitAt();
+  }
+
+  /** One tick of a march; zombies close by maul the column. */
+  marchStep(u: Unit, dt: number): void {
+    const g = this.grid;
+    const route = u.route!;
+    const speed = CFG.move[u.type as keyof typeof CFG.move] as number;
+    const near = this.zomHash.countInRadius(this.x, this.y, u.x, u.y, 3);
+    u.hp -= near * CFG.zombie.unitDps * dt;
+    const c = g.idx(u.x, u.y);
+    if (route[c] <= 2) {
+      const d = u.dest!;
+      u.x = d.inside ? d.x : g.cx(c);
+      u.y = d.inside ? d.y : g.cy(c);
+      if (d.inside) {
+        const roof = g.height[g.idx(d.x, d.y)];
+        u.elev = u.type === 'sniper' ? roof : Math.min(roof, 8);
+      }
+      u.moving = false;
+      u.route = null;
+      u.dest = null;
+      this.rebuildUnitAt();
+      return;
+    }
+    const to = this.bestNeighbour(c, (nn) => route[nn], false);
+    if (to < 0) return;
+    const dx = g.cx(to) - u.x;
+    const dy = g.cy(to) - u.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const step = Math.min(len, speed * dt);
+    u.x += (dx / len) * step;
+    u.y += (dy / len) * step;
+    u.aim = Math.atan2(dy, dx);
   }
 
   placeSpikes(cells: number[]): void {
@@ -378,11 +460,12 @@ export class World {
       this.evacDirty = false;
       let k = 0;
       for (const u of this.units) if (u.type === 'evac') src[k++] = g.idx(u.x, u.y);
+      this.solver.solve(src, k, this.evacField, { cap: Math.ceil((CFG.units.evac.radius / g.cell) * 2) });
+      k = 0;
       for (const z of this.zones)
         for (let y = z.y0 + g.cell / 2; y < z.y1; y += g.cell)
           for (let x = z.x0 + g.cell / 2; x < z.x1; x += g.cell) src[k++] = g.idx(x, y);
-      const reach = Math.max(CFG.units.evac.radius, CFG.safeZone.attract);
-      this.solver.solve(src, k, this.evacField, { cap: Math.ceil((reach / g.cell) * 2) });
+      this.solver.solve(src, k, this.shelterField, { cap: Math.ceil((CFG.safeZone.attract / g.cell) * 2) });
     }
   }
 
@@ -456,7 +539,7 @@ export class World {
   }
 
   private moveCivilians(dt: number): void {
-    const { kind, grid, zombieField: zf, evacField: ef, crowd } = this;
+    const { kind, grid, zombieField: zf, evacField: ef, shelterField: sf, crowd } = this;
     const cv = CFG.civilian;
     const panicD = (cv.panicRadius / grid.cell) * 2;
     // calm wanderers only need updating every 4th tick
@@ -476,22 +559,27 @@ export class World {
       }
       const c = grid.idx(this.x[i], this.y[i]);
       const threatened = zf[c] < panicD;
-      const run = threatened || ef[c] < INF;
+      const run = threatened || ef[c] < INF || (sf[c] < INF && sf[c] > 0);
       const v = (run ? cv.run : cv.walk) * this.speed[i] * dt;
-      if (ef[c] === 0 && this.zones.length && this.zones.some((z) => inRect(z, this.x[i], this.y[i]))) {
+      if (ef[c] < INF) {
+        // an evacuation point is in reach: it beats sheltering
+        const to = this.bestNeighbour(c, (nn) => ef[nn] + (zf[nn] < 6 ? (6 - zf[nn]) * 6 : 0) + crowd[nn] * 2, false);
+        if (to >= 0) this.stepTowards(i, to, v, false);
+        else this.wander(i, v * 0.3, false);
+      } else if (sf[c] === 0 && this.zones.some((z) => inRect(z, this.x[i], this.y[i]))) {
         // sheltering: mill about but stay inside the zone
         if ((i & 3) === phase) {
           const h = (this.heading[i] += this.rng.range(-0.6, 0.6));
           const nx = this.x[i] + Math.cos(h) * v;
           const ny = this.y[i] + Math.sin(h) * v;
-          if (ef[grid.idx(nx, ny)] === 0 && grid.open(grid.idx(nx, ny))) {
+          if (sf[grid.idx(nx, ny)] === 0 && grid.open(grid.idx(nx, ny))) {
             this.x[i] = nx;
             this.y[i] = ny;
           } else this.heading[i] += Math.PI;
         }
-      } else if (ef[c] < INF) {
-        // head to refuge, avoiding zombies on the way
-        const to = this.bestNeighbour(c, (nn) => ef[nn] + (zf[nn] < 6 ? (6 - zf[nn]) * 6 : 0) + crowd[nn] * 2, false);
+      } else if (sf[c] < INF) {
+        // head for the safe zone, avoiding zombies on the way
+        const to = this.bestNeighbour(c, (nn) => sf[nn] + (zf[nn] < 6 ? (6 - zf[nn]) * 6 : 0) + crowd[nn] * 2, false);
         if (to >= 0) this.stepTowards(i, to, v, false);
         else this.wander(i, v * 0.3, false);
       } else if (threatened) {

@@ -69,6 +69,7 @@ function play(ms: Mission): void {
   $('modal').classList.add('hidden');
   $('game').classList.remove('hidden');
   game = new Game(map, grid, ms, progress.upgrades, (r) => showResult(ms, r), showMenu);
+  (window as unknown as { __zf: Game }).__zf = game; // handle for automated checks
 }
 
 function showResult(ms: Mission, r: GameResult): void {

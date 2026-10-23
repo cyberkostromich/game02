@@ -115,3 +115,25 @@ describe('abilities', () => {
     expect(w.killsBy.fire).toBeGreaterThanOrEqual(6);
   });
 });
+
+describe('moving units', () => {
+  it('a sniper marches around a building and climbs onto a roof', async () => {
+    const { BUILDING } = await import('../src/sim/grid');
+    const w = arena(300, [[120, 0, 160, 220]]); // a long block between start and goal
+    for (let i = 0; i < w.grid.solid.length; i++) if (w.grid.solid[i] === BUILDING) w.grid.height[i] = 60;
+    const u = w.addUnit('sniper', 60, 60);
+    w.startBattle();
+    w.spawn(ZOMBIE, 290, 290); // keep the battle going
+    expect(w.orderMove(u, 150, 100)).toBe(true); // into the building -> its roof
+    run(w, 200); // ~400 m around the block at 3 m/s
+    expect(u.moving).toBe(false);
+    expect(u.elev).toBe(60);
+    expect(Math.hypot(u.x - 150, u.y - 100)).toBeLessThan(1);
+  });
+
+  it('turrets cannot be ordered into a building', () => {
+    const w = arena(200, [[80, 80, 120, 120]]);
+    const u = w.addUnit('mines', 30, 30);
+    expect(w.orderMove(u, 50, 50)).toBe(false); // not movable
+  });
+});

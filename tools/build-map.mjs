@@ -107,7 +107,9 @@ const water = [];
 const roads = [];
 const labels = [];
 
-const isBuilding = (t) => t.building && t.building !== 'no';
+// canopies and roofs over streets are not obstacles
+const NOT_BUILDING = new Set(['no', 'roof', 'canopy', 'carport', 'bridge']);
+const isBuilding = (t) => t.building && !NOT_BUILDING.has(t.building) && !(parseFloat(t.layer) < 0) && t.location !== 'underground';
 const isPark = (t) =>
   ['park', 'garden', 'pitch', 'playground'].includes(t.leisure) ||
   ['grass', 'village_green'].includes(t.landuse);

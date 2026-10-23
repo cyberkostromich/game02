@@ -1,22 +1,18 @@
-// World (metres) <-> screen (CSS px) transform with 90° rotation steps.
+// World (metres) <-> screen (CSS px) transform with view rotation in whole degrees.
 export class Camera {
   x = 1000; // world point at screen centre
   y = 1300;
   zoom = 0.4; // CSS px per metre
-  rot = 0; // quarter turns clockwise
+  deg = 0; // view rotation, degrees clockwise
+  cos = 1;
+  sin = 0;
   vw = 1;
   vh = 1;
   minZoom = 0.15;
   maxZoom = 8;
 
-  get cos(): number {
-    return [1, 0, -1, 0][this.rot];
-  }
-  get sin(): number {
-    return [0, 1, 0, -1][this.rot];
-  }
   get angle(): number {
-    return (this.rot * Math.PI) / 2;
+    return (this.deg * Math.PI) / 180;
   }
 
   toScreen(wx: number, wy: number): [number, number] {
@@ -54,8 +50,10 @@ export class Camera {
     this.x += wx - wx2;
     this.y += wy - wy2;
   }
-  rotate(dir: 1 | -1): void {
-    this.rot = (this.rot + dir + 4) % 4;
+  rotate(stepDeg: number): void {
+    this.deg = (((this.deg + stepDeg) % 360) + 360) % 360;
+    this.cos = Math.cos(this.angle);
+    this.sin = Math.sin(this.angle);
   }
   fit(w: number, h: number, margin = 0.95): void {
     this.x = w / 2;

@@ -267,6 +267,15 @@ export function drawTop(
       ctx.moveTo(sx, sy - lift);
       ctx.lineTo(ex, ey);
       ctx.stroke();
+    } else if (e.kind === 'evac') {
+      // a rescued person lifts off towards the evac point
+      const [ex, ey] = cam.toScreen(e.x2, e.y2);
+      const x = sx + (ex - sx) * Math.min(1, k * 2);
+      const y = sy + (ey - sy) * Math.min(1, k * 2) - k * 26;
+      ctx.fillStyle = `rgba(47,209,184,${1 - k})`;
+      ctx.font = '700 11px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('+1', x, y);
     } else if (e.kind === 'boom') {
       ctx.fillStyle = `rgba(255,${Math.round(200 - 120 * k)},60,${0.85 * (1 - k)})`;
       ctx.beginPath();
@@ -370,6 +379,34 @@ export function drawTop(
       ctx.fillText('ОЧАГ', sx, sy - 22);
     }
   }
+
+  // march orders: destination marker and the line to it
+  for (const u of w.units) {
+    if (!u.moving || !u.dest) continue;
+    const [ax, ay] = cam.toScreen(u.x, u.y);
+    const [bx, by] = cam.toScreen(u.dest.x, u.dest.y);
+    ctx.strokeStyle = 'rgba(255,95,176,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(bx, by, 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (const m of w.moveMarks) {
+    const [mx, my] = cam.toScreen(m.x, m.y);
+    ctx.strokeStyle = `rgba(255,95,176,${m.t})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mx, my, 6 + (1 - m.t) * 14, 0, Math.PI * 2);
+    ctx.stroke();
+    m.t -= 0.03;
+  }
+  w.moveMarks = w.moveMarks.filter((m) => m.t > 0);
 
   for (const u of w.units) drawUnit(ctx, u, cam, now / 1000, u.id === selectedId);
 }

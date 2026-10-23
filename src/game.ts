@@ -5,10 +5,10 @@ import { landmark, type Mission } from './missions';
 import { starsFor } from './progress';
 import { AgentRenderer } from './render/agents';
 import { Camera } from './render/camera';
-import { MapLayer } from './render/mapLayer';
+import { LEAN, MapLayer, MAX_VISUAL_H } from './render/mapLayer';
 import { drawGround, drawRange, drawTop, rangeOf, unitScreen, ZONE_FILL, ZONE_LINE } from './render/overlay';
 import { abilityReady, useAbility } from './sim/abilities';
-import type { Grid, MapData } from './sim/grid';
+import { BUILDING, type Grid, type MapData } from './sim/grid';
 import { zoneCost, zoneFromDrag } from './sim/support';
 import {
   barricadeCells,
@@ -20,6 +20,7 @@ import {
   levelUp,
   levelUpCost,
   magazineOf,
+  MOVABLE,
   SPECIALISTS,
   type Unit,
 } from './sim/units';
@@ -158,8 +159,8 @@ export class Game {
     const t = ALL_TOOLS.find((d) => d.key === k);
     if (t) return this.setTool(t.id);
     if (k === 'Escape') return this.setTool(null);
-    if (k === ',' || k === 'Б') return this.rotate(-1);
-    if (k === '.' || k === 'Ю') return this.rotate(1);
+    if (k === 'Q' || k === 'Й' || k === ',') return this.rotate(-30);
+    if (k === 'E' || k === 'У' || k === '.') return this.rotate(30);
     if (k === 'M' || k === 'Ь') return this.toggleSound();
     if (k === 'U' && this.selected) return this.upgradeSelected();
     if (k === 'X' && this.selected) return this.removeSelected();
@@ -177,7 +178,7 @@ export class Game {
 
   // ---------- actions ----------
 
-  private rotate(d: 1 | -1): void {
+  private rotate(d: number): void {
     this.cam.rotate(d);
     this.mapCacheKey = '';
     sound.ui('click');
@@ -192,6 +193,7 @@ export class Game {
   private start(): void {
     sound.unlock();
     this.world.startBattle();
+    sound.ui('siren');
     this.el('btn-start').classList.add('hidden');
     this.el('btn-refund').classList.add('hidden');
     this.el('speed').classList.remove('hidden');
@@ -223,9 +225,28 @@ export class Game {
     sound.ui('error');
   }
 
-  private tap(x: number, y: number, sx: number, sy: number): void {
+  /**
+   * What the finger is on in the 2.5D view: roofs and walls are drawn shifted
+   * up the screen, so walk back along the view direction to find the building
+   * whose roof or wall covers this point (frontmost first).
+   */
+  private pick(x: number, y: number): { x: number; y: number } {
+    const g = this.world.grid;
+    const [dx, dy] = this.cam.down();
+    for (let s = MAX_VISUAL_H * LEAN; s >= 0; s -= 1) {
+      const qx = x + dx * s;
+      const qy = y + dy * s;
+      if (qx < 0 || qy < 0 || qx >= this.world.widthM || qy >= this.world.heightM) continue;
+      const c = g.idx(qx, qy);
+      if (g.solid[c] === BUILDING && Math.min(g.height[c], MAX_VISUAL_H) * LEAN >= s - 1) return { x: qx, y: qy };
+    }
+    return { x, y };
+  }
+
+  private tap(tx: number, ty: number, sx: number, sy: number): void {
     const w = this.world;
     const t = this.tool;
+    const { x, y } = this.pick(tx, ty);
     if (t && isAbility(t) && !LINE_TOOLS.has(t)) {
       if (w.phase !== 'battle') return this.flash('Поддержка доступна после начала вспышки');
       if (!abilityReady(w, t)) return this.flash(w.cooldowns[t] > 0 ? 'Перезарядка' : 'Не хватает бюджета');
@@ -237,18 +258,32 @@ export class Game {
       if (w.budget < toolCost(t)) return this.flash('Не хватает бюджета');
       if (inExclusion(w, x, y)) return this.flash('До начала вспышки в зону очага не войти');
       if (!canPlace(w, t, x, y)) return this.flash(placeError(t));
-      w.budget -= toolCost(t);
-      const u = w.addUnit(t, x, y);
-      if (t === 'heli') u.aim = 0;
-      sound.ui('place');
-      return this.refreshHud();
+      if (t === 'heli' && (x !== tx || y !== ty)) return this.placeAt(t, tx, ty);
+      return this.placeAt(t, x, y);
     }
     const hit = this.unitAtScreen(sx, sy);
-    if (hit) this.selected = hit === this.selected ? null : hit;
-    else if (this.selected?.type === 'heli') {
-      this.selected.tx = x;
-      this.selected.ty = y;
+    const sel = this.selected;
+    if (hit) this.selected = hit === sel ? null : hit;
+    else if (sel?.type === 'heli') {
+      sel.tx = tx;
+      sel.ty = ty;
+    } else if (sel && MOVABLE.has(sel.type)) {
+      if (w.phase === 'planning' && inExclusion(w, x, y)) return this.flash('До начала вспышки в зону очага не войти');
+      if (!canPlace(w, sel.type, x, y)) return this.flash(placeError(sel.type));
+      if (w.phase === 'planning') w.relocate(sel, x, y);
+      else if (!w.orderMove(sel, x, y)) return this.flash('Туда не пройти');
+      w.moveMarks.push({ x, y, t: 1 });
+      sound.ui('click');
     } else this.selected = null;
+    this.refreshHud();
+  }
+
+  private placeAt(t: UnitType, x: number, y: number): void {
+    const w = this.world;
+    w.budget -= toolCost(t);
+    const u = w.addUnit(t, x, y);
+    if (t === 'heli') u.aim = 0;
+    sound.ui('place');
     this.refreshHud();
   }
 
@@ -377,8 +412,8 @@ export class Game {
     this.el('btn-start').onclick = () => this.start();
     this.el('btn-refund').onclick = () => this.refundAll();
     this.el('btn-menu').onclick = () => this.onQuit();
-    this.el('btn-rotl').onclick = () => this.rotate(-1);
-    this.el('btn-rotr').onclick = () => this.rotate(1);
+    this.el('btn-rotl').onclick = () => this.rotate(-30);
+    this.el('btn-rotr').onclick = () => this.rotate(30);
     this.el('btn-sound').onclick = () => this.toggleSound();
     this.el('btn-sound').textContent = sound.muted ? '🔇' : '🔊';
     // confirm in place: a second tap within 3 s retreats (no browser dialogs)
@@ -471,7 +506,8 @@ export class Game {
       u.type === 'mines' ? gauge('Заряды', u.ammo / CFG.units.mines.charges, `${u.ammo}`) : '',
       u.type === 'heli' ? gauge('Топливо', 1 - u.age / CFG.units.heli.duration, `${Math.max(0, Math.ceil(CFG.units.heli.duration - u.age))} с`) : '',
       u.elev > 0 && u.type === 'sniper' ? plain('Крыша', `${u.elev} м`) : '',
-      plain('Убито', `${u.kills}`),
+      plain(u.type === 'evac' ? 'Вывезено' : 'Убито', `${u.kills}`),
+      u.moving ? plain('Статус', 'на марше') : MOVABLE.has(u.type) ? '<div style="color:var(--muted);font-size:11px">Коснитесь карты — переместить</div>' : '',
     ].join('');
     const up = canLevelUp(u)
       ? `<button class="up" id="sel-up" ${w.budget < levelUpCost(u) ? 'disabled' : ''}>[U] Ур.${u.level + 1} $${levelUpCost(u)}</button>`
@@ -514,6 +550,8 @@ export class Game {
       if (n === MAX_TICKS_PER_FRAME) this.acc = 0; // device can't keep up: slow down instead of spiralling
     }
     sound.drain(w.sfx, this.cam);
+    // horde drone: more zombies and a closer camera make it louder
+    sound.setHorde(w.phase === 'battle' ? Math.log10(1 + w.counts.zombie) / 4 * Math.min(1, this.cam.zoom / 1.2 + 0.3) : 0);
     if (w.phase === 'won' || w.phase === 'lost') this.finish(w.phase === 'won');
     this.hudT -= dt;
     if (this.hudT <= 0) {
@@ -525,7 +563,7 @@ export class Game {
 
   private render(now: number): void {
     const { cam, dpr, world: w } = this;
-    const key = `${cam.x.toFixed(2)},${cam.y.toFixed(2)},${cam.zoom.toFixed(4)},${cam.rot},${cam.vw},${cam.vh}`;
+    const key = `${cam.x.toFixed(2)},${cam.y.toFixed(2)},${cam.zoom.toFixed(4)},${cam.deg},${cam.vw},${cam.vh}`;
     if (key !== this.mapCacheKey) {
       this.mapLayer.draw(this.mapCache.getContext('2d')!, cam, dpr);
       this.mapCacheKey = key;
@@ -549,10 +587,11 @@ export class Game {
       drawRange(tc, cam, this.selected.x, this.selected.y, r.r, 'rgba(214,66,143,0.8)', r.rMin);
     }
     if (t && isUnit(t) && this.hoverPt) {
-      const ok = canPlace(w, t, this.hoverPt.x, this.hoverPt.y);
-      const c = w.grid.idx(this.hoverPt.x, this.hoverPt.y);
+      const p = t === 'heli' ? this.hoverPt : this.pick(this.hoverPt.x, this.hoverPt.y);
+      const ok = canPlace(w, t, p.x, p.y);
+      const c = w.grid.idx(p.x, p.y);
       const r = rangeOf(w, t, t === 'sniper' ? w.grid.height[c] : 0);
-      drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, r.r, ok ? 'rgba(125,255,90,0.7)' : 'rgba(255,90,79,0.7)', r.rMin);
+      drawRange(tc, cam, p.x, p.y, r.r, ok ? 'rgba(125,255,90,0.7)' : 'rgba(255,90,79,0.7)', r.rMin);
     }
     if (t === 'gas' && this.hoverPt) drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, CFG.abilities.gas.radius, 'rgba(200,230,90,0.8)');
     if (t === 'arms' && this.hoverPt) drawRange(tc, cam, this.hoverPt.x, this.hoverPt.y, CFG.abilities.arms.radius, 'rgba(90,200,255,0.8)');
@@ -566,12 +605,11 @@ export class Game {
     if (t === 'barricade' || t === 'spikes') {
       const cells = barricadeCells(w, d.x0, d.y0, d.x1, d.y1, t === 'barricade' ? CFG.barricade.maxCells : CFG.spikes.maxCells);
       const g = w.grid;
-      const s = g.cell * cam.zoom;
+      tc.save();
+      tc.setTransform(...cam.matrix(this.dpr));
       tc.fillStyle = t === 'barricade' ? 'rgba(255,179,71,0.6)' : 'rgba(200,200,210,0.5)';
-      for (const c of cells) {
-        const [sx, sy] = cam.toScreen(g.cx(c), g.cy(c));
-        tc.fillRect(sx - s / 2, sy - s / 2, s, s);
-      }
+      for (const c of cells) tc.fillRect(g.cx(c) - g.cell / 2, g.cy(c) - g.cell / 2, g.cell, g.cell);
+      tc.restore();
     } else if (t === 'zone') {
       const z = zoneFromDrag(d.x0, d.y0, d.x1, d.y1);
       const pts = [cam.toScreen(d.x0, d.y0), cam.toScreen(d.x1, d.y0), cam.toScreen(d.x1, d.y1), cam.toScreen(d.x0, d.y1)];

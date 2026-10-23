@@ -45,7 +45,7 @@ export const CFG = {
     mortar: { cost: 450, hp: 50, rangeMin: 50, range: 340, reload: 3.2, blast: 12, flight: 1.8, magazine: 14 },
     garrison: { cost: 400, hp: 600, range: 95, reload: 0.3, accuracy: 0.65, magazine: 300 }, // assault squad in a building
     mines: { cost: 200, hp: 1, radius: 10, blast: 4, charges: 12, reload: 0.4 },
-    evac: { cost: 250, hp: 120, radius: 300, rate: 6 },
+    evac: { cost: 250, hp: 120, radius: 300, rate: 10, pickup: 12 }, // pickup: m around the point
     heli: { cost: 650, hp: 1, range: 80, reload: 0.08, accuracy: 0.45, speed: 28, duration: 70 },
     // building specialisations, only inside a safe zone
     medic: { cost: 300, hp: 300, radius: 30, cureRate: 1, healRadius: 90, healRate: 4 },
@@ -63,6 +63,8 @@ export const CFG = {
   barricade: { costPerCell: 12, hp: 260, maxCells: 24 },
   spikes: { costPerCell: 3, maxCells: 30, slow: 0.4, killRate: 0.25 }, // killRate: chance per second
   levels: { max: 3, costShare: 0.6, rate: 0.5, range: 0.1, hp: 0.4 }, // per level above 1
+  // movable units walk the streets at these speeds (m/s); they can't shoot on the march
+  move: { sniper: 3, garrison: 2.6, turret: 1.3, mortar: 1.3, maxPath: 1500 },
   supply: { breachRadius: 25 }, // a zombie this close to the evac point cuts the supply
   abilities: {
     gas: { cost: 200, cooldown: 25, radius: 30, duration: 10 },
