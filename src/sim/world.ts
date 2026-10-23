@@ -109,12 +109,15 @@ export class World {
   killsBy: Record<string, number> = {};
   sfx: SfxEvent[] = []; // sound events for the renderer; drained every frame
   moveMarks: { x: number; y: number; t: number }[] = []; // UI: where a march was ordered
+  notes: { k: 'lost' | 'breach' | 'dry'; type?: UnitType }[] = []; // UI notifications, drained each frame
+  zoneHeld: boolean[] = []; // last known state of each safe-zone part
   nextUnitId = 1;
 
   phase: Phase = 'planning';
   time = 0;
   tickNo = 0;
   budget = 0;
+  infiniteAmmo = false; // game mode: magazines never run dry
   airstrikes = 0;
   counts = { civ: 0, infected: 0, zombie: 0, recruit: 0 };
   stats: Stats = { population: 0, evacuated: 0, infected: 0, friendlyFire: 0, zombiesKilled: 0, cured: 0, recruited: 0, bounty: 0 };
@@ -353,6 +356,7 @@ export class World {
       this.zoneParts.push(cells);
     }
     this.zoneVersion++;
+    this.zoneHeld = [];
     this.evacDirty = true;
   }
 
@@ -367,7 +371,8 @@ export class World {
     const inside = g.solid[c] === BUILDING;
     const goals = inside ? doorsOf(this, c) : g.solid[c] === OPEN ? [c] : [];
     if (!goals.length) return false;
-    const route = u.route ?? new Uint16Array(g.w * g.h);
+    // solve into a fresh buffer: a failed order must not wreck the current march
+    const route = new Uint16Array(g.w * g.h);
     this.solver.solve(goals, goals.length, route, { cap: Math.ceil((CFG.move.maxPath / g.cell) * 2) });
     let start = g.idx(u.x, u.y);
     if (g.solid[start] !== OPEN) {
@@ -402,11 +407,12 @@ export class World {
     const g = this.grid;
     const route = u.route!;
     const speed = CFG.move[u.type as keyof typeof CFG.move] as number;
-    if (u.type === 'tank') {
-      // tracks: zombies under the hull are crushed
-      this.zomHash.forEachInRadius(this.x, this.y, u.x, u.y, CFG.armour.crushRadius, (i) => {
+    if (VEHICLES.has(u.type)) {
+      // tracks and wheels: zombies under the hull are crushed
+      const r = u.type === 'tank' ? CFG.armour.crushRadius : CFG.armour.bmpCrushRadius;
+      this.zomHash.forEachInRadius(this.x, this.y, u.x, u.y, r, (i) => {
         if (this.kind[i] !== ZOMBIE) return;
-        this.kill(i, 'tank');
+        this.kill(i, u.type);
         u.kills++;
       });
     } else {
@@ -455,6 +461,7 @@ export class World {
     this.time += dt;
     this.tickNo++;
     if (this.sfx.length > 400) this.sfx.length = 0; // nobody is listening
+    if (this.notes.length > 50) this.notes.length = 0;
     const n = this.n;
     this.px.set(this.x.subarray(0, n));
     this.py.set(this.y.subarray(0, n));
@@ -642,6 +649,7 @@ export class World {
         this.timer[i] -= dt;
         if (this.timer[i] <= 0) {
           kind[i] = ZOMBIE;
+          this.crowd[grid.idx(this.x[i], this.y[i])]++; // keep the zombie census exact this tick
           this.zhp[i] = this.zombieHp;
           this.speed[i] = this.zombieSpeed();
           this.timer[i] = 0;
@@ -652,12 +660,15 @@ export class World {
       const threatened = zf[c] < panicD;
       const run = threatened || ef[c] < INF || (sf[c] < INF && sf[c] > 0);
       const v = (run ? cv.run : cv.walk) * this.speed[i] * dt;
-      if (ef[c] < INF) {
-        // an evacuation point is in reach: it beats sheltering
+      const inZone = this.zoneMask[c] === 1;
+      // flow: the area around a safe zone walks into it; inside, people head on
+      // to an evacuation point if one is in reach; with no zone nearby they go
+      // straight to evacuation
+      if (ef[c] < INF && (inZone || sf[c] >= INF)) {
         const to = this.bestNeighbour(c, (nn) => ef[nn] + (zf[nn] < 6 ? (6 - zf[nn]) * 6 : 0) + crowd[nn] * 2, false);
         if (to >= 0) this.stepTowards(i, to, v, false);
         else this.wander(i, v * 0.3, false);
-      } else if (sf[c] === 0 && this.zoneMask[c]) {
+      } else if (inZone) {
         // sheltering: mill about but stay inside the zone
         if ((i & 3) === phase) {
           const h = (this.heading[i] += this.rng.range(-0.6, 0.6));
@@ -706,7 +717,7 @@ export class World {
       if (uid) {
         const u = this.units.find((q) => q.id === uid);
         if (u) {
-          u.hp -= z.unitDps * dt;
+          u.hp -= z.unitDps * dt * (u.elev > 0 ? CFG.cover : 1);
           continue;
         }
       }
@@ -750,7 +761,7 @@ export class World {
         }
         continue;
       }
-      crowd[c]--;
+      if (crowd[c] > 0) crowd[c]--;
       crowd[to]++;
       this.stepTowards(i, to, v, true);
     }

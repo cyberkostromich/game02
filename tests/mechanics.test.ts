@@ -15,7 +15,7 @@ describe('zombie toughness', () => {
     const before = w.budget;
     expect(w.hit(z, 'test')).toBe(true);
     expect(w.killsBy.test).toBe(1);
-    expect(w.budget).toBe(before + 2); // bounty
+    expect(w.budget).toBe(before + 5); // bounty
   });
 });
 
@@ -206,7 +206,7 @@ describe('armour', () => {
 describe('personal top', () => {
   it('keeps the best runs by people evacuated and flags records', async () => {
     const { recordRun } = await import('../src/progress');
-    const p: import('../src/progress').Progress = { stars: {}, upgrades: {}, best: {}, runs: [] };
+    const p: import('../src/progress').Progress = { stars: {}, upgrades: {}, best: {}, runs: [], infiniteAmmo: false };
     const run = (ev: number) => ({ mission: 'm', date: '2026-10-23', evacuated: ev, savedPct: 50, won: true, kills: 1 });
     expect(recordRun(p, run(100)).evacuated).toBe(true);
     expect(recordRun(p, run(50)).evacuated).toBe(false);
@@ -216,5 +216,100 @@ describe('personal top', () => {
     for (let k = 0; k < 20; k++) recordRun(p, run(k));
     expect(p.runs.length).toBe(10);
     expect(p.best.m.evacuated).toBe(300);
+  });
+});
+
+describe('round 3 fixes', () => {
+  it('a BMP crushes zombies it drives over', () => {
+    const w = arena(400);
+    const b = w.addUnit('bmp', 40, 200);
+    w.startBattle();
+    for (let k = 0; k < 6; k++) w.spawn(ZOMBIE, 140 + k * 12, 200);
+    w.speed.fill(0);
+    b.ammo = 0; // no shooting: only the wheels can kill
+    w.infiniteAmmo = false;
+    expect(w.orderMove(b, 340, 200)).toBe(true);
+    run(w, 60);
+    expect(w.killsBy.bmp).toBeGreaterThanOrEqual(4);
+  });
+
+  it('assault squads shoot on the march but slower; snipers do not', () => {
+    const fire = (type: 'garrison' | 'sniper') => {
+      const w = arena(400);
+      const u = w.addUnit(type, 40, 100);
+      w.startBattle();
+      for (let k = 0; k < 30; k++) w.spawn(ZOMBIE, 60 + k * 2, 150);
+      w.speed.fill(0);
+      w.orderMove(u, 360, 100);
+      run(w, 5);
+      return u.kills;
+    };
+    expect(fire('garrison')).toBeGreaterThan(0);
+    expect(fire('sniper')).toBe(0);
+  });
+
+  it('people walk into a safe zone first, then on to the evac point inside it', () => {
+    const w = arena(600);
+    w.addZone({ x0: 300, y0: 260, x1: 420, y1: 360 });
+    w.addUnit('evac', 400, 340);
+    for (let k = 0; k < 20; k++) w.spawn(CIV, 80 + k, 100); // 300+ m away, outside the evac radius
+    w.stats.population = 20;
+    w.startBattle();
+    w.spawn(ZOMBIE, 580, 580);
+    run(w, 300); // ~300 m on foot, then the queue at the evac point
+    expect(w.stats.evacuated).toBeGreaterThan(15);
+  });
+
+  it('infinite ammo mode never empties a magazine', () => {
+    const w = arena(300);
+    w.infiniteAmmo = true;
+    const u = w.addUnit('sniper', 50, 150);
+    w.startBattle();
+    for (let k = 0; k < 5; k++) w.spawn(ZOMBIE, 200 + k * 3, 150);
+    run(w, 6);
+    expect(u.kills).toBeGreaterThan(0);
+    expect(u.ammo).toBe(30);
+  });
+});
+
+describe('review regressions', () => {
+  it('mines inside a safe zone keep finite charges', () => {
+    const w = arena(300);
+    w.addZone({ x0: 100, y0: 100, x1: 200, y1: 200 });
+    const m = w.addUnit('mines', 150, 150);
+    m.ammo = 3;
+    w.startBattle();
+    w.spawn(ZOMBIE, 20, 20);
+    run(w, 1);
+    expect(m.ammo).toBe(3);
+  });
+
+  it('a failed new order does not freeze a marching unit', () => {
+    const w = arena(400);
+    const u = w.addUnit('sniper', 40, 40);
+    w.startBattle();
+    w.spawn(ZOMBIE, 390, 390);
+    expect(w.orderMove(u, 300, 40)).toBe(true);
+    expect(w.orderMove(u, 2, 2)).toBe(false); // solid map edge
+    const x0 = u.x;
+    run(w, 5);
+    expect(u.x).toBeGreaterThan(x0 + 5);
+  });
+
+  it('a street shooter beside a building cannot see through it', async () => {
+    const { lineOfSight } = await import('../src/sim/units');
+    const w = arena(300, [[120, 0, 180, 260]]);
+    expect(lineOfSight(w, 118, 100, 2, 240, 100)).toBe(false);
+  });
+
+  it('the zombie census never underflows when people turn', () => {
+    const w = arena(200);
+    for (let k = 0; k < 30; k++) w.spawn(CIV, 90 + (k % 6) * 2, 90 + Math.floor(k / 6) * 2);
+    w.outbreak = [{ x: 100, y: 100, n: 2, infected: 20, r: 30 }];
+    w.startBattle();
+    for (let t = 0; t < 400; t++) {
+      w.tick(0.1);
+      expect(Math.max(...w.crowd)).toBeLessThan(1000);
+    }
   });
 });

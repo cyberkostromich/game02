@@ -78,6 +78,7 @@ export interface Shell {
   r: number;
   flight: number;
   by: string; // kill credit
+  owner?: Unit;
 }
 
 export interface Strike {
@@ -116,7 +117,7 @@ export function lineOfSight(w: World, x0: number, y0: number, h0: number, x1: nu
   const len = Math.hypot(dx, dy);
   const step = g.cell * 0.5;
   const n = Math.floor(len / step);
-  let leaving = true;
+  let leaving = g.solid[g.idx(x0, y0)] === BUILDING; // only a shooter inside a building looks out of it
   for (let k = 1; k < n; k++) {
     const t = (k * step) / len;
     const c = g.idx(x0 + dx * t, y0 + dy * t);
@@ -161,11 +162,11 @@ function fireAt(w: World, u: Unit, range: number, reload: number, accuracy: numb
     w.kind[i] === ZOMBIE && (!los || lineOfSight(w, u.x, u.y, h0, w.x[i], w.y[i])),
   );
   if (t < 0) return;
-  u.cd = reload / levelRate(u);
-  u.ammo--;
+  u.cd = (reload / levelRate(u)) * (u.moving ? (CFG.moveFire[u.type] ?? 1) : 1);
+  if (!w.infiniteAmmo && --u.ammo === 0) w.notes.push({ k: 'dry', type: u.type });
   u.aim = Math.atan2(w.y[t] - u.y, w.x[t] - u.x);
   w.sfx.push({ k: u.type === 'sniper' ? 'sniper' : 'gun', x: u.x, y: u.y });
-  w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: w.x[t], y2: w.y[t], r: 0, t: 0, life: u.type === 'sniper' ? 0.35 : 0.08, h: u.elev });
+  w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: w.x[t], y2: w.y[t], t: 0, life: u.type === 'sniper' ? 0.45 : 0.22, h: u.elev, r: u.type === 'sniper' ? 2 : 1 });
   if (w.rng.next() < accuracy && w.hit(t, u.type)) u.kills++;
 }
 
@@ -192,9 +193,9 @@ function tankFire(w: World, u: Unit, dt: number): void {
   const ty = w.y[t];
   if (w.civHash.countInRadius(w.x, w.y, tx, ty, d.blast) > CFG.armour.tankCivilianRisk) return;
   u.cd = d.reload / levelRate(u);
-  u.ammo--;
+  if (!w.infiniteAmmo) u.ammo--;
   u.aim = Math.atan2(ty - u.y, tx - u.x);
-  w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: tx, y2: ty, r: 0, t: 0, life: 0.15 });
+  w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: tx, y2: ty, r: 3, t: 0, life: 0.3 });
   const before = w.stats.zombiesKilled;
   boom(w, tx, ty, d.blast, 'tank');
   u.kills += w.stats.zombiesKilled - before;
@@ -266,7 +267,11 @@ function evacuate(w: World, u: Unit, dt: number): void {
 
 export function updateUnits(w: World, dt: number): void {
   const before = w.units.length;
-  for (const u of w.units) if (u.hp <= 0 && u.type !== 'mines') boomQuiet(w, u);
+  for (const u of w.units)
+    if (u.hp <= 0 && u.type !== 'mines') {
+      boomQuiet(w, u);
+      w.notes.push({ k: 'lost', type: u.type });
+    }
   w.units = w.units.filter((u) => u.hp > 0 && !(u.type === 'heli' && u.age > CFG.units.heli.duration));
   if (w.units.length !== before) {
     w.rebuildUnitAt();
@@ -280,6 +285,10 @@ export function updateUnits(w: World, dt: number): void {
   const zone2 = CFG.safeZone.radius ** 2;
   // a zone part is intact while no zombie stands inside it
   const intact = w.zoneParts.map((cells) => !cells.some((c) => w.crowd[c] > 0));
+  intact.forEach((ok, p) => {
+    if (!ok && w.zoneHeld[p] !== false) w.notes.push({ k: 'breach' });
+    w.zoneHeld[p] = ok;
+  });
   const g = w.grid;
   const suppliedByZone = (u: Unit) => {
     const c = g.idx(u.x, u.y);
@@ -292,7 +301,7 @@ export function updateUnits(w: World, dt: number): void {
   };
   for (const u of w.units) {
     const mag = magazineOf(u);
-    if (u.ammo >= mag) continue;
+    if (!Number.isFinite(mag) || u.ammo >= mag) continue; // mines keep their own charges
     if (depots.some((d) => (d.x - u.x) ** 2 + (d.y - u.y) ** 2 < zone2) || suppliedByZone(u)) u.ammo = mag;
   }
 
@@ -301,7 +310,7 @@ export function updateUnits(w: World, dt: number): void {
     u.cd -= dt;
     if (u.moving) {
       w.marchStep(u, dt);
-      if (!VEHICLES.has(u.type)) continue;
+      if (!CFG.moveFire[u.type]) continue; // only squads and armour shoot on the march
     }
     switch (u.type) {
       case 'tank':
@@ -351,9 +360,9 @@ export function updateUnits(w: World, dt: number): void {
           break;
         }
         u.cd = d.reload / levelRate(u);
-        u.ammo--;
+        if (!w.infiniteAmmo) u.ammo--;
         u.aim = Math.atan2(t.y - u.y, t.x - u.x);
-        w.shells.push({ x: t.x, y: t.y, t: d.flight, r: blast, flight: d.flight, by: 'mortar' });
+        w.shells.push({ x: t.x, y: t.y, t: d.flight, r: blast, flight: d.flight, by: 'mortar', owner: u });
         w.sfx.push({ k: 'thump', x: u.x, y: u.y });
         w.effects.push({ kind: 'tracer', x: u.x, y: u.y, x2: u.x, y2: u.y, r: 0, t: 0, life: 0.2 });
         break;
@@ -367,7 +376,9 @@ export function updateUnits(w: World, dt: number): void {
         const z = w.zomHash.nearest(w.x, w.y, u.x, u.y, d.radius, 0, (i) => w.kind[i] === ZOMBIE);
         if (z < 0) break;
         u.cd = d.reload;
+        const before = w.stats.zombiesKilled;
         boom(w, w.x[z], w.y[z], d.blast, 'mines');
+        u.kills += w.stats.zombiesKilled - before;
         if (--u.ammo <= 0) u.hp = 0;
         break;
       }
@@ -378,7 +389,10 @@ export function updateUnits(w: World, dt: number): void {
 
   for (const s of w.shells) {
     s.t -= dt;
-    if (s.t <= 0) boom(w, s.x, s.y, s.r, s.by);
+    if (s.t > 0) continue;
+    const before = w.stats.zombiesKilled;
+    boom(w, s.x, s.y, s.r, s.by);
+    if (s.owner) s.owner.kills += w.stats.zombiesKilled - before;
   }
   w.shells = w.shells.filter((s) => s.t > 0);
 

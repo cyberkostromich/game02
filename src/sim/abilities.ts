@@ -1,5 +1,5 @@
 import { CFG, type AbilityId } from '../config';
-import { CIV, RECRUIT, type World } from './world';
+import { CIV, RECRUIT, ZOMBIE, type World } from './world';
 
 // Called-in support with a price and a cooldown: gas (freezes zombies), fire
 // (a burning strip that kills anyone crossing it), paratroopers (a free squad
@@ -71,11 +71,13 @@ export function updateAbilities(w: World, dt: number): void {
   for (const c of w.clouds) {
     c.t -= dt;
     if (c.kind !== 'fire') continue;
-    const burn = (i: number) => {
-      if (w.rng.next() < kill && w.kind[i] !== 0) w.hit(i, 'fire');
+    const burn = (zombies: boolean) => (i: number) => {
+      // the crowd index lags a tick: a fresh zombie may sit in both indexes
+      if ((w.kind[i] === ZOMBIE) !== zombies || w.kind[i] === 0) return;
+      if (w.rng.next() < kill) w.hit(i, 'fire');
     };
-    w.zomHash.forEachInRadius(w.x, w.y, c.x, c.y, c.r, burn);
-    w.civHash.forEachInRadius(w.x, w.y, c.x, c.y, c.r, burn);
+    w.zomHash.forEachInRadius(w.x, w.y, c.x, c.y, c.r, burn(true));
+    w.civHash.forEachInRadius(w.x, w.y, c.x, c.y, c.r, burn(false));
   }
   w.clouds = w.clouds.filter((c) => c.t > 0);
 

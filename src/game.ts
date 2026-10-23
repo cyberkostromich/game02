@@ -59,6 +59,8 @@ export class Game {
   private dpr = 1;
   private tool: Tool | null = null;
   private group: (typeof GROUPS)[number]['id'] = 'deploy';
+  private openGroup: (typeof GROUPS)[number]['id'] | null = null;
+  private glide = { x: 0, y: 0 }; // camera inertia after a pan, px/s
   private selected: Unit | null = null;
   private hoverPt: { x: number; y: number } | null = null;
   private drag: { x0: number; y0: number; x1: number; y1: number } | null = null;
@@ -76,6 +78,7 @@ export class Game {
     grid: Grid,
     private readonly mission: Mission,
     upgrades: Upgrades,
+    infiniteAmmo: boolean,
     private readonly onEnd: (r: GameResult) => void,
     private readonly onQuit: () => void,
   ) {
@@ -83,6 +86,7 @@ export class Game {
     this.world = new World(grid, map.width, map.height, Math.ceil(mission.population * 1.4) + 4000, mission.seed, modsFrom(upgrades));
     const w = this.world;
     w.zombieHp = mission.zombieHp ?? 1;
+    w.infiniteAmmo = infiniteAmmo;
     w.populate(mission.population - (mission.crowds ?? []).reduce((a, c) => a + c.n, 0));
     for (const c of mission.crowds ?? []) {
       const p = landmark(map, c.at);
@@ -116,6 +120,8 @@ export class Game {
       hover: (x, y) => (this.hoverPt = { x, y }),
       cameraMoved: () => this.cam.clamp(map.width, map.height),
       rotate: (d) => this.rotate(d),
+      fling: (vx, vy) => (this.glide = { x: vx, y: vy }),
+      cancelLine: () => (this.drag = null),
     });
     this.topCanvas.addEventListener('pointerdown', () => sound.unlock());
     window.addEventListener('resize', this.resize);
@@ -145,13 +151,7 @@ export class Game {
     this.mapCache.width = this.mapCanvas.width;
     this.mapCache.height = this.mapCanvas.height;
     this.mapCacheKey = '';
-    this.measureBar();
   };
-
-  private measureBar(): void {
-    const h = this.el('bar').getBoundingClientRect().height;
-    this.el('game').style.setProperty('--bar-h', `${Math.round(h)}px`);
-  }
 
   private key = (e: KeyboardEvent) => {
     sound.unlock();
@@ -165,6 +165,7 @@ export class Game {
     if (k === 'U' && this.selected) return this.upgradeSelected();
     if (k === 'X' && this.selected) return this.removeSelected();
     if (k === 'D' && this.selected) return this.dropSelected();
+    if (k === 'F' && this.selected) return this.occupyNearest();
     const f = ['F1', 'F2', 'F3', 'F4', 'F5'].indexOf(k);
     if (f >= 0 && this.world.phase === 'battle') {
       e.preventDefault();
@@ -201,7 +202,6 @@ export class Game {
     this.el('btn-retreat').classList.remove('hidden');
     sound.ui('place');
     this.refreshHud();
-    this.measureBar();
   }
 
   private setSpeed(s: number): void {
@@ -252,6 +252,14 @@ export class Game {
     const forType = (type: UnitType) => (!canPlace(w, type, picked.x, picked.y) && canPlace(w, type, tx, ty) ? { x: tx, y: ty } : picked);
     const want = t && isUnit(t) ? t : this.selected?.type;
     const { x, y } = want ? forType(want) : picked;
+    // touching an existing unit selects it, even with a tool in hand
+    const onUnit = this.unitAtScreen(sx, sy);
+    if (onUnit && t && !LINE_TOOLS.has(t)) {
+      this.tool = null;
+      this.selected = onUnit;
+      sound.ui('click');
+      return this.refreshHud();
+    }
     if (t && isAbility(t) && !LINE_TOOLS.has(t)) {
       if (w.phase !== 'battle') return this.flash('Поддержка доступна после начала вспышки');
       if (!abilityReady(w, t)) return this.flash(w.cooldowns[t] > 0 ? 'Перезарядка' : 'Не хватает бюджета');
@@ -288,6 +296,46 @@ export class Game {
     w.budget -= toolCost(t);
     const u = w.addUnit(t, x, y);
     if (t === 'heli') u.aim = 0;
+    if (w.grid.solid[w.grid.idx(x, y)] === BUILDING) {
+      const name = ALL_TOOLS.find((d) => d.id === t)!.name;
+      this.toast(`${name}: здание занято · ${u.elev > 8 ? `крыша ${u.elev} м` : 'стрельба из окон'}`, 'good');
+    }
+    sound.ui('place');
+    this.refreshHud();
+  }
+
+  /** Nearest building cell (within ~40 m) a street unit could move into. */
+  private nearestBuilding(u: Unit): { x: number; y: number } | null {
+    const g = this.world.grid;
+    const c0 = g.idx(u.x, u.y);
+    const cx = c0 % g.w;
+    const cy = Math.floor(c0 / g.w);
+    for (let r = 1; r <= 10; r++)
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const c = (cy + dy) * g.w + cx + dx;
+          if (c >= 0 && c < g.solid.length && g.solid[c] === BUILDING) {
+            // step two cells further in so the squad sits inside, not on the wall
+            const nx = g.cx(c) + Math.sign(dx) * g.cell;
+            const ny = g.cy(c) + Math.sign(dy) * g.cell;
+            const inner = g.solid[g.idx(nx, ny)] === BUILDING;
+            return inner ? { x: nx, y: ny } : { x: g.cx(c), y: g.cy(c) };
+          }
+        }
+    return null;
+  }
+
+  private occupyNearest(): void {
+    const u = this.selected;
+    const w = this.world;
+    if (!u || !MOVABLE.has(u.type) || u.type === 'tank' || u.type === 'bmp') return;
+    const b = this.nearestBuilding(u);
+    if (!b) return this.flash('Рядом нет здания');
+    if (w.phase === 'planning') {
+      w.relocate(u, b.x, b.y);
+      this.toast('Здание занято', 'good');
+    } else if (!w.orderMove(u, b.x, b.y)) return this.flash('Туда не пройти');
     sound.ui('place');
     this.refreshHud();
   }
@@ -345,12 +393,13 @@ export class Game {
     const share = this.world.phase === 'planning' ? 1 : 0.5;
     let spent = CFG.units[u.type].cost;
     for (let l = 1; l < u.level; l++) spent += Math.round(CFG.units[u.type].cost * CFG.levels.costShare * l);
-    return Math.floor(spent * share * Math.max(0, u.hp / u.maxHp));
+    const left = u.type === 'mines' ? u.ammo / CFG.units.mines.charges : u.hp / u.maxHp;
+    return Math.floor(spent * share * Math.max(0, Math.min(1, left)));
   }
 
   private removeSelected(): void {
     const u = this.selected;
-    if (!u) return;
+    if (!u || u.type === 'heli') return; // helicopters leave on their own
     this.world.budget += this.refundOf(u);
     this.world.removeUnit(u);
     this.selected = null;
@@ -394,25 +443,15 @@ export class Game {
   // ---------- HUD ----------
 
   private buildHud(): void {
-    const groups = this.el('groups');
-    const tabs = GROUPS.map((g) => `<button data-tab="${g.id}">${g.title}</button>`).join('');
-    groups.innerHTML =
-      `<div class="tabs">${tabs}</div>` +
-      GROUPS.map(
-        (g) =>
-          `<div class="group" data-group="${g.id}"><div class="label">${g.title}</div><div class="list">${g.tools
-            .map(
-              (d) =>
-                `<button class="tool" data-tool="${d.id}" title="${d.hint}"><kbd>[${d.key}]</kbd><span class="sw" style="background:${toolColor(d.id)}"></span><span class="nm">${d.name}</span><span class="cost num">${costLabel(d.id)}</span></button>`,
-            )
-            .join('')}</div></div>`,
-      ).join('');
-    groups.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach((b) => (b.onclick = () => this.setTool(b.dataset.tool as Tool)));
-    groups.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(
+    const rail = this.el('rail');
+    rail.innerHTML = GROUPS.map((g) => `<button data-open="${g.id}" title="${g.title}">${g.icon}<span>${g.short}</span></button>`).join('');
+    rail.querySelectorAll<HTMLButtonElement>('[data-open]').forEach(
       (b) =>
         (b.onclick = () => {
-          this.group = b.dataset.tab as typeof this.group;
+          const id = b.dataset.open as typeof this.group;
+          this.openGroup = this.openGroup === id ? null : id;
           sound.ui('click');
+          this.renderFlyout();
           this.refreshHud();
         }),
     );
@@ -443,13 +482,43 @@ export class Game {
       .querySelectorAll<HTMLButtonElement>('button')
       .forEach((b) => (b.onclick = () => this.setSpeed(Number(b.dataset.s))));
     this.setSpeed(1);
+    this.openGroup = null;
+    this.renderFlyout();
     this.refreshHud();
-    requestAnimationFrame(() => {
-      this.measureBar();
-      // keep the outbreak in the middle of the map area above the bottom bar
-      this.cam.panBy(0, -this.el('bar').getBoundingClientRect().height / 2);
-      this.mapCacheKey = '';
-    });
+  }
+
+  /** Grid of tool cells for the open group (built once per opening). */
+  private renderFlyout(): void {
+    const fly = this.el('flyout');
+    const g = GROUPS.find((q) => q.id === this.openGroup);
+    fly.classList.toggle('hidden', !g);
+    if (!g) return;
+    fly.innerHTML = `<div class="label">${g.title}</div><div class="cells">${g.tools
+      .map(
+        (d) =>
+          `<button class="cell" data-tool="${d.id}" title="${d.hint}"><kbd>${d.key}</kbd><span class="ic" style="background:${toolColor(d.id)}"></span><span class="nm">${d.name}</span><span class="cost num">${costLabel(d.id)}</span></button>`,
+      )
+      .join('')}</div>`;
+    fly.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          this.setTool(b.dataset.tool as Tool);
+          this.openGroup = null; // the grid folds away once a cell is picked
+          this.renderFlyout();
+          this.refreshHud();
+        }),
+    );
+  }
+
+  /** Short message at the top of the screen. */
+  private toast(text: string, kind: 'good' | 'bad' = 'bad'): void {
+    const box = this.el('toasts');
+    const t = document.createElement('div');
+    t.className = `glass toast ${kind}`;
+    t.textContent = text;
+    box.appendChild(t);
+    setTimeout(() => t.remove(), 3300);
+    while (box.children.length > 3) box.firstChild!.remove();
   }
 
   private refreshHud(): void {
@@ -461,18 +530,21 @@ export class Game {
     const ss = Math.floor(w.time % 60).toString().padStart(2, '0');
     const share = Math.round(((w.phase === 'planning' ? civ : w.saved()) / pop) * 100);
     this.el('stats').innerHTML = `<div class="title">${this.mission.title}</div>
-      <div class="phase">${w.phase === 'planning' ? 'ПОДГОТОВКА · расставьте силы' : `ВСПЫШКА · ${mm}:${ss}`}</div>
+      <div class="phase">${w.phase === 'planning' ? 'Подготовка' : `Вспышка · ${mm}:${ss}`}${w.infiniteAmmo ? ' · ∞ патроны' : ''}</div>
+      <div class="money">$${fmt(w.budget)}</div>
+      <div class="bounty">${w.stats.bounty ? `+$${fmt(w.stats.bounty)} за убийства` : `+$${CFG.bounty} за каждого зомби`}</div>
       <div class="rowv c-civ"><span>Мирные</span><b class="num">${fmt(civ)} · ${share}%</b></div>
       <div class="rowv c-zom"><span>Зомби${w.zombieHp > 1 ? ` (HP ${w.zombieHp})` : ''}</span><b class="num">${fmt(w.counts.zombie)}</b></div>
       ${w.counts.infected ? `<div class="rowv c-inf"><span>Заражены</span><b class="num">${fmt(w.counts.infected)}</b></div>` : ''}
       ${w.stats.evacuated ? `<div class="rowv c-evac"><span>Эвакуировано</span><b class="num">${fmt(w.stats.evacuated)}</b></div>` : ''}
-      ${w.counts.recruit ? `<div class="rowv c-rec"><span>Рекруты</span><b class="num">${fmt(w.counts.recruit)}</b></div>` : ''}`;
-    this.el('budget').textContent = `$${fmt(w.budget)}`;
-    this.el('bounty').textContent = w.stats.bounty ? `+$${fmt(w.stats.bounty)} за убийства` : `$${CFG.bounty} за зомби`;
+      ${w.counts.recruit ? `<div class="rowv c-rec"><span>Бойцы-добровольцы</span><b class="num">${fmt(w.counts.recruit)}</b></div>` : ''}`;
 
-    document.querySelectorAll<HTMLElement>('[data-group]').forEach((g) => g.classList.toggle('on', g.dataset.group === this.group));
-    document.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === this.group));
-    document.querySelectorAll<HTMLButtonElement>('.tool').forEach((b) => {
+    const toolGroup = this.tool ? GROUPS.find((g) => g.tools.some((d) => d.id === this.tool))?.id : null;
+    document.querySelectorAll<HTMLElement>('[data-open]').forEach((b) => {
+      b.classList.toggle('open', b.dataset.open === this.openGroup);
+      b.classList.toggle('has', b.dataset.open === toolGroup);
+    });
+    document.querySelectorAll<HTMLButtonElement>('.cell').forEach((b) => {
       const t = b.dataset.tool as Tool;
       const def = ALL_TOOLS.find((d) => d.id === t)!;
       b.classList.toggle('active', t === this.tool);
@@ -480,17 +552,20 @@ export class Game {
       b.disabled = w.budget < toolCost(t) || (!!def.battleOnly && w.phase !== 'battle') || cd > 0;
       b.querySelector('.cost')!.textContent = cd > 0 ? `${Math.ceil(cd)} с` : costLabel(t);
     });
+    const chip = this.el('toolchip');
+    const active = ALL_TOOLS.find((d) => d.id === this.tool);
+    chip.classList.toggle('hidden', !active);
+    if (active) chip.innerHTML = `<b>${active.name}</b> · Esc / ещё раз — отмена`;
 
     if (performance.now() > this.flashUntil) {
       const h = this.el('hint');
       h.classList.remove('warn');
-      const def = ALL_TOOLS.find((d) => d.id === this.tool);
-      h.classList.toggle('idle', !def && w.phase !== 'planning');
-      h.textContent = def
-        ? def.hint
+      h.classList.toggle('idle', !active && w.phase !== 'planning');
+      h.textContent = active
+        ? active.hint
         : w.phase === 'planning'
-          ? 'Зелёный круг — очаг: до начала туда не войти. Выберите силы внизу и коснитесь карты.'
-          : 'Тяните карту, щипок — масштаб, поворот двумя пальцами — вращение. Коснитесь юнита, чтобы выбрать.';
+          ? 'Зелёный круг — очаг, туда до начала не войти. Силы — в колонке справа.'
+          : 'Тяните карту, щипок — масштаб, Q/E или два пальца — поворот. Коснитесь юнита, чтобы выбрать.';
     }
     this.refreshSelected();
   }
@@ -518,23 +593,30 @@ export class Game {
       u.type === 'heli' ? gauge('Топливо', 1 - u.age / CFG.units.heli.duration, `${Math.max(0, Math.ceil(CFG.units.heli.duration - u.age))} с`) : '',
       u.elev > 0 && u.type === 'sniper' ? plain('Крыша', `${u.elev} м`) : '',
       plain(u.type === 'evac' ? 'Вывезено' : 'Убито', `${u.kills}`),
+      MOVABLE.has(u.type) ? plain('Позиция', w.grid.solid[w.grid.idx(u.x, u.y)] === BUILDING ? 'в здании · укрытие' : 'на улице') : '',
       u.moving ? plain('Статус', 'на марше') : MOVABLE.has(u.type) ? '<div style="color:var(--muted);font-size:11px">Коснитесь карты — переместить</div>' : '',
     ].join('');
     const up = canLevelUp(u)
       ? `<button class="up" id="sel-up" ${w.budget < levelUpCost(u) ? 'disabled' : ''}>[U] Ур.${u.level + 1} $${levelUpCost(u)}</button>`
       : '<button disabled>Макс. уровень</button>';
     const refund = u.type === 'heli' ? '<button disabled>—</button>' : `<button id="sel-x">[X] Снять +$${this.refundOf(u)}</button>`;
+    const inside = w.grid.solid[w.grid.idx(u.x, u.y)] === BUILDING;
+    const occupy =
+      MOVABLE.has(u.type) && u.type !== 'tank' && u.type !== 'bmp' && !inside && !u.moving
+        ? '<button id="sel-occupy" style="grid-column:1/-1">[F] Занять ближайшее здание</button>'
+        : '';
     const squad =
       u.type === 'bmp'
         ? `<button id="sel-drop" style="grid-column:1/-1" ${u.aux > 0 || w.phase !== 'battle' ? 'disabled' : ''}>[D] Высадить десант${u.aux > 0 ? ` · ${Math.ceil(u.aux)} с` : ''}</button>`
         : '';
-    const html = `<div class="head"><span>${def.name}</span><small>УР. ${u.level}/${CFG.levels.max}</small></div><div class="body">${rows}</div><div class="acts">${refund}${up}${squad}</div>`;
+    const html = `<div class="head"><span>${def.name}</span><small>УР. ${u.level}/${CFG.levels.max}</small></div><div class="body">${rows}</div><div class="acts">${refund}${up}${squad}${occupy}</div>`;
     if (sel.dataset.html !== html) {
       sel.innerHTML = html;
       sel.dataset.html = html;
       document.getElementById('sel-x')?.addEventListener('click', () => this.removeSelected());
       document.getElementById('sel-up')?.addEventListener('click', () => this.upgradeSelected());
       document.getElementById('sel-drop')?.addEventListener('click', () => this.dropSelected());
+      document.getElementById('sel-occupy')?.addEventListener('click', () => this.occupyNearest());
     }
     sel.classList.remove('hidden');
   }
@@ -555,7 +637,7 @@ export class Game {
     const w = this.world;
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
-    if (w.phase === 'battle') {
+    if (w.phase === 'battle' && !this.ended) {
       this.acc += dt * this.speed;
       // simulate within a time budget so the picture stays smooth; a slow device
       // plays slower instead of stuttering
@@ -568,9 +650,23 @@ export class Game {
       }
       if (this.acc > STEP * 2) this.acc = STEP; // dropped time is not caught up later
     }
+    if (Math.hypot(this.glide.x, this.glide.y) > 8) {
+      this.cam.panBy(this.glide.x * dt, this.glide.y * dt);
+      this.cam.clamp(w.widthM, w.heightM);
+      const k = Math.exp(-dt * 4.5);
+      this.glide.x *= k;
+      this.glide.y *= k;
+    }
+    if (this.ended) w.sfx.length = 0;
     sound.drain(w.sfx, this.cam);
+    for (const n of w.notes.splice(0)) {
+      const name = n.type ? ALL_TOOLS.find((d) => d.id === n.type)?.name ?? '' : '';
+      if (n.k === 'lost') this.toast(`${name}: потерян`);
+      else if (n.k === 'breach') this.toast('Зомби прорвались в safe zone — снабжение прервано');
+      else this.toast(`${name}: кончились патроны — отведите в safe zone`);
+    }
     // horde drone: more zombies and a closer camera make it louder
-    sound.setHorde(w.phase === 'battle' ? Math.log10(1 + w.counts.zombie) / 4 * Math.min(1, this.cam.zoom / 1.2 + 0.3) : 0);
+    sound.setHorde(w.phase === 'battle' && !this.ended ? Math.log10(1 + w.counts.zombie) / 4 * Math.min(1, this.cam.zoom / 1.2 + 0.3) : 0);
     if (w.phase === 'won' || w.phase === 'lost') this.finish(w.phase === 'won');
     this.hudT -= dt;
     if (this.hudT <= 0) {
@@ -593,6 +689,12 @@ export class Game {
     drawGround(mc, w, cam, dpr);
     for (const u of w.units)
       if (!u.moving && w.grid.solid[w.grid.idx(u.x, u.y)] === BUILDING) this.mapLayer.highlight(mc, cam, dpr, u.x, u.y, UNIT_COLOR[u.type]);
+    // preview: the building a squad would take under the cursor
+    if (this.tool && isUnit(this.tool) && this.hoverPt && !SPECIALISTS.has(this.tool)) {
+      const p = this.pick(this.hoverPt.x, this.hoverPt.y);
+      if (w.grid.solid[w.grid.idx(p.x, p.y)] === BUILDING && canPlace(w, this.tool, p.x, p.y))
+        this.mapLayer.highlight(mc, cam, dpr, p.x, p.y, UNIT_COLOR[this.tool], 0.45);
+    }
 
     this.agents.draw(w, cam, dpr, Math.min(1, this.acc / STEP));
 

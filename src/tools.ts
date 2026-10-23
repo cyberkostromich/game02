@@ -14,13 +14,20 @@ export interface ToolDef {
 export interface ToolGroup {
   id: 'deploy' | 'rear' | 'support';
   title: string;
+  short: string;
+  icon: string; // inline SVG markup
   tools: ToolDef[];
 }
+
+const svg = (d: string) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
 export const GROUPS: ToolGroup[] = [
   {
     id: 'deploy',
     title: 'Оборона',
+    short: 'Бой',
+    icon: svg('<path d="M12 3l8 3v6c0 4.6-3.4 8.3-8 9.5C7.4 20.3 4 16.6 4 12V6z"/><path d="M9 12l2 2 4-4"/>'),
     tools: [
       { id: 'sniper', key: '1', name: 'Снайпер', hint: 'Дальний точный огонь, нужна прямая видимость. Коснитесь крыши — с высотки видно поверх домов и дальше.' },
       { id: 'garrison', key: '2', name: 'Штурмовики', hint: 'Дешёвый отряд: на улицу или в здание (стреляет из окон, подсвечивает дом). Можно перемещать.' },
@@ -36,6 +43,8 @@ export const GROUPS: ToolGroup[] = [
   {
     id: 'rear',
     title: 'Тыл',
+    short: 'Тыл',
+    icon: svg('<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M12 11v6M9 14h6"/>'),
     tools: [
       { id: 'zone', key: 'B', name: 'Safe zone', hint: 'Растяните прямоугольник. Мирные стягиваются внутрь, бойцы пополняют патроны, можно ставить спецздания.' },
       { id: 'evac', key: 'R', name: 'Эвакуация', hint: 'Мирные в радиусе 300 м бегут к пункту и вывозятся. Вокруг пункта — safe zone.' },
@@ -47,6 +56,8 @@ export const GROUPS: ToolGroup[] = [
   {
     id: 'support',
     title: 'Поддержка',
+    short: 'Удары',
+    icon: svg('<path d="M21 3L3 10.5l7 2.5 2.5 7z"/><path d="M10 13l5-5"/>'),
     tools: [
       { id: 'heli', key: 'Z', name: 'Вертолёт', hint: 'Пулемёт с воздуха на 70 с. Выберите вертолёт и коснитесь карты, чтобы перенаправить.' },
       { id: 'airstrike', key: 'C', name: 'Авиаудар', hint: 'Проведите линию захода. Бомбят всё на полосе — и мирных тоже.', battleOnly: true },

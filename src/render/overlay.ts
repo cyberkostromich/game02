@@ -321,14 +321,51 @@ export function drawTop(
     const k = e.t / e.life;
     const [sx, sy] = cam.toScreen(e.x, e.y);
     if (e.kind === 'tracer') {
+      // r: 0 = mortar launch (flash only), 1 = rifle/MG, 2 = sniper, 3 = tank gun
       const [ex, ey] = cam.toScreen(e.x2, e.y2);
-      const lift = (e.h ?? 0) * LEAN * z;
-      ctx.strokeStyle = `rgba(255,236,160,${0.9 * (1 - k)})`;
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy - lift);
-      ctx.lineTo(ex, ey);
-      ctx.stroke();
+      const ax = sx;
+      const ay = sy - (e.h ?? 0) * LEAN * z;
+      const heavy = e.r >= 2;
+      if (e.r > 0) {
+        // fading trail plus a bright round flying to the target
+        ctx.strokeStyle = heavy ? `rgba(255,255,255,${0.75 * (1 - k)})` : `rgba(255,214,120,${0.55 * (1 - k)})`;
+        ctx.lineWidth = heavy ? 1.8 : 1.1;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        const f = Math.min(1, k * 1.8);
+        const bx = ax + (ex - ax) * f;
+        const by = ay + (ey - ay) * f;
+        const tx = ax + (ex - ax) * Math.max(0, f - 0.18);
+        const ty = ay + (ey - ay) * Math.max(0, f - 0.18);
+        ctx.strokeStyle = heavy ? '#ffffff' : '#ffe9a8';
+        ctx.lineWidth = heavy ? 3 : 2.2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+        if (f >= 1) {
+          // impact spark
+          ctx.fillStyle = `rgba(255,240,200,${1 - k})`;
+          ctx.beginPath();
+          ctx.arc(ex, ey, heavy ? 4 : 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      if (k < 0.45) {
+        // muzzle flash
+        const fr = (e.r === 3 ? 9 : e.r === 2 ? 6 : 4.5) * (1 - k / 0.45);
+        const g = ctx.createRadialGradient(ax, ay, 0, ax, ay, fr * 2);
+        g.addColorStop(0, 'rgba(255,250,220,0.95)');
+        g.addColorStop(0.4, 'rgba(255,190,80,0.7)');
+        g.addColorStop(1, 'rgba(255,140,40,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(ax, ay, fr * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else if (e.kind === 'evac') {
       // a rescued person lifts off towards the evac point
       const [ex, ey] = cam.toScreen(e.x2, e.y2);

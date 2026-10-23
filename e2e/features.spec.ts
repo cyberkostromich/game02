@@ -35,7 +35,7 @@ async function spots(page: Page): Promise<{ bld: Pt; street: Pt; street2: Pt }> 
         const c = grid.idx(x, y);
         if (!far(x, y)) continue;
         if (!bld && grid.solid[c] === 1 && grid.height[c] > 10 && grid.height[c] < 40) bld = { x: grid.cx(c), y: grid.cy(c) };
-        if (grid.solid[c] === 0) {
+        if (grid.solid[c] === 0 && bld && Math.hypot(bld.x - x, bld.y - y) > 50) {
           if (!street) street = { x: grid.cx(c), y: grid.cy(c) };
           else if (!street2 && Math.hypot(street.x - x, street.y - y) > 60) street2 = { x: grid.cx(c), y: grid.cy(c) };
         }
@@ -103,6 +103,39 @@ test('two overlapping safe zones merge and the overlap is not paid twice', async
   const b2 = await game(page)(() => (window as any).__zf.world.budget);
   expect(await game(page)(() => (window as any).__zf.world.zoneParts.length)).toBe(1);
   expect(b0 - b1).toBeGreaterThan(b1 - b2); // second rectangle shares cells with the first
+});
+
+test('a squad on the street takes the nearest building from its card', async ({ page }) => {
+  const s = await spots(page);
+  await page.keyboard.press('2');
+  const st = await screenOf(page, s.street);
+  await page.mouse.click(st.x, st.y);
+  await page.keyboard.press('Escape');
+  await page.mouse.click(st.x, st.y); // select it
+  await page.click('#sel-occupy');
+  const inside = await game(page)(() => {
+    const w = (window as any).__zf.world;
+    const u = w.units[0];
+    return w.grid.solid[w.grid.idx(u.x, u.y)] === 1 && u.elev > 0;
+  });
+  expect(inside).toBe(true);
+  await expect(page.locator('#sel')).toContainText('в здании');
+});
+
+test('every gun leaves a visible trace, not only snipers', async ({ page }) => {
+  await page.click('#btn-start');
+  const kinds = await page.evaluate(() => {
+    const w = (window as any).__zf.world;
+    const z = w.outbreak[0];
+    w.addUnit('turret', z.x + 30, z.y);
+    let most = 0;
+    for (let t = 0; t < 30; t++) {
+      w.tick(0.1);
+      most = Math.max(most, w.effects.filter((e: { kind: string; life: number }) => e.kind === 'tracer' && e.life >= 0.18).length);
+    }
+    return most;
+  });
+  expect(kinds).toBeGreaterThan(0);
 });
 
 test('a finished run lands in the personal top', async ({ page }) => {

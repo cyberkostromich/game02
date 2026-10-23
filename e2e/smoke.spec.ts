@@ -10,16 +10,18 @@ test('menu → mission → deploy → outbreak runs without errors', async ({ pa
   await expect(page.locator('#stats .title')).toHaveText('Ночь на Таймс-сквер');
 
   // the outbreak zone is closed during planning: a tap in its centre is refused
+  await page.click('[data-open="deploy"]'); // the rail unfolds into a grid of cells
   await page.click('[data-tool="sniper"]');
+  await expect(page.locator('#flyout')).toBeHidden(); // picking a cell folds it away
   const box = (await page.locator('#top').boundingBox())!;
   await page.mouse.click(box.width / 2, box.height / 2);
   await expect(page.locator('#hint')).toContainText('зону очага');
-  await expect(page.locator('#budget')).toHaveText('$2 400');
+  await expect(page.locator('#stats .money')).toHaveText('$3 600');
 
   await page.click('#btn-start');
   await page.click('[data-s="4"]');
   await page.waitForTimeout(4000);
-  await expect(page.locator('#stats .phase')).toContainText('ВСПЫШКА');
+  await expect(page.locator('#stats .phase')).toContainText('Вспышка');
   const zombies = Number((await page.locator('#stats .c-zom b').textContent())!.replace(/\D/g, ''));
   expect(zombies).toBeGreaterThan(0);
   expect(errors).toEqual([]);

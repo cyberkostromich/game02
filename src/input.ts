@@ -9,6 +9,10 @@ export interface InputHandlers {
   hover(wx: number, wy: number): void;
   cameraMoved(): void;
   rotate(stepDeg: number): void;
+  /** pan released with this velocity (px/s): the map glides on */
+  fling(vx: number, vy: number): void;
+  /** a line drag was abandoned (second finger, cancelled gesture) */
+  cancelLine(): void;
 }
 
 const TAP_SLOP = 8;
@@ -21,6 +25,7 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
   let lineStart = { x: 0, y: 0 };
   let pinch = { d: 1, cx: 0, cy: 0, a: 0 };
   let twist = 0;
+  let vel = { x: 0, y: 0, t: 0 };
 
   const local = (e: PointerEvent) => {
     const r = el.getBoundingClientRect();
@@ -33,10 +38,11 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
 
   el.addEventListener('pointerdown', (e) => {
     el.setPointerCapture(e.pointerId);
+    h.fling(0, 0); // a touch catches the gliding map
     const p = local(e);
     pts.set(e.pointerId, p);
     if (pts.size === 2) {
-      if (mode === 'line') h.line(lineStart.x, lineStart.y, lineStart.x, lineStart.y, false);
+      if (mode === 'line') h.cancelLine();
       mode = 'pinch';
       pinch = pinchState();
       twist = 0;
@@ -83,6 +89,10 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
       if (mode === 'pan') {
         cam.panBy(p.x - prev.x, p.y - prev.y);
         h.cameraMoved();
+        const now = performance.now();
+        const dt = Math.max(1, now - vel.t) / 1000;
+        // smoothed release velocity
+        vel = { x: vel.x * 0.6 + ((p.x - prev.x) / dt) * 0.4, y: vel.y * 0.6 + ((p.y - prev.y) / dt) * 0.4, t: now };
       }
     }
   });
@@ -91,6 +101,8 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
     if (!pts.has(e.pointerId)) return;
     const p = local(e);
     pts.delete(e.pointerId);
+    if (mode === 'pan' && pts.size === 0 && performance.now() - vel.t < 80) h.fling(vel.x, vel.y);
+    if (mode === 'pan') vel = { x: 0, y: 0, t: 0 };
     if (mode === 'tap' && e.type === 'pointerup') {
       const [wx, wy] = cam.toWorld(p.x, p.y);
       h.tap(wx, wy, p.x, p.y);
@@ -98,8 +110,13 @@ export function attachInput(el: HTMLElement, cam: Camera, h: InputHandlers): voi
       const [wx, wy] = cam.toWorld(p.x, p.y);
       h.line(lineStart.x, lineStart.y, wx, wy, true);
     }
+    if (mode === 'line' && e.type === 'pointercancel') h.cancelLine();
     if (pts.size === 0) mode = 'none';
-    else if (mode === 'pinch') mode = 'pan';
+    else if (mode === 'pinch') {
+      // two fingers still down keep pinching; one left keeps panning
+      if (pts.size === 2) pinch = pinchState();
+      else mode = 'pan';
+    }
   };
   el.addEventListener('pointerup', end);
   el.addEventListener('pointercancel', end);

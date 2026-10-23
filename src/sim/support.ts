@@ -122,7 +122,7 @@ export function updateRecruits(
     if (t >= 0) {
       if (w.timer[i] <= 0) {
         w.timer[i] = r.reload * w.rng.range(0.8, 1.2);
-        w.effects.push({ kind: 'tracer', x, y, x2: w.x[t], y2: w.y[t], r: 0, t: 0, life: 0.07 });
+        w.effects.push({ kind: 'tracer', x, y, x2: w.x[t], y2: w.y[t], r: 1, t: 0, life: 0.18 });
         w.sfx.push({ k: 'rifle', x, y });
         if (w.rng.next() < r.accuracy) w.hit(t, 'recruits');
       }

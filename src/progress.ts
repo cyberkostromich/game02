@@ -8,6 +8,7 @@ export interface Run {
   savedPct: number;
   won: boolean;
   kills: number;
+  infinite?: boolean; // played with infinite ammo
 }
 
 export interface Progress {
@@ -15,6 +16,7 @@ export interface Progress {
   upgrades: Upgrades;
   best: Record<string, { evacuated: number; savedPct: number }>;
   runs: Run[]; // top runs by people evacuated
+  infiniteAmmo: boolean; // game mode switch
 }
 
 const TOP = 10;
@@ -24,11 +26,11 @@ const KEY = 'zombies-nyc-progress-v1';
 export function loadProgress(): Progress {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { stars: {}, upgrades: {}, best: {}, runs: [], ...JSON.parse(raw) };
+    if (raw) return { stars: {}, upgrades: {}, best: {}, runs: [], infiniteAmmo: false, ...JSON.parse(raw) };
   } catch {
     /* private mode or blocked storage: play without saving */
   }
-  return { stars: {}, upgrades: {}, best: {}, runs: [] };
+  return { stars: {}, upgrades: {}, best: {}, runs: [], infiniteAmmo: false };
 }
 
 /** Records a finished run; returns which personal bests it beat. */

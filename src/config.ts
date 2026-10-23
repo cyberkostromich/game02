@@ -33,7 +33,7 @@ export const CFG = {
     exclusion: 160, // no deployments this close to an outbreak during planning
     incubationMax: 35, // hidden carriers turn within this many seconds of the start
   },
-  bounty: 2, // $ per zombie killed, paid during the battle
+  bounty: 5, // $ per zombie killed, paid during the battle
   lostBelow: 0.1, // the city is lost once fewer than this share can still be saved
   // Friendly fire: mortar refuses a target if civilians in the blast exceed
   // zombies * this ratio.
@@ -57,7 +57,7 @@ export const CFG = {
   },
   recruit: { range: 40, reload: 1.3, accuracy: 0.35, speed: 1.9, guard: 80, seek: 160 }, // seek: free squads hunt this far
   // safe zones: a circle around every evac point, plus rectangles the player draws
-  safeZone: { radius: 170, costPerM2: 0.01, minSide: 24, maxArea: 160000, attract: 260 },
+  safeZone: { radius: 170, costPerM2: 0.01, minSide: 24, maxArea: 160000, attract: 450 },
   sight: {
     eye: 2, // m above ground/roof
     sniperRoofBonus: 0.4, // extra range per metre of roof height
@@ -68,7 +68,10 @@ export const CFG = {
   levels: { max: 3, costShare: 0.6, rate: 0.5, range: 0.1, hp: 0.4 }, // per level above 1
   // movable units walk the streets at these speeds (m/s); they can't shoot on the march
   move: { sniper: 3, garrison: 2.6, turret: 1.3, mortar: 1.3, tank: 4.5, bmp: 7, maxPath: 2500 },
-  armour: { crushRadius: 3.2, bmpArmour: 0.3, tankCivilianRisk: 2 }, // tank won't fire main gun if more civilians in blast
+  // who keeps shooting on the march, and how much slower (reload multiplier)
+  moveFire: { garrison: 2, tank: 1, bmp: 1 } as Partial<Record<string, number>>,
+  cover: 0.6, // damage taken by units inside a building
+  armour: { crushRadius: 3.2, bmpCrushRadius: 2.6, bmpArmour: 0.3, tankCivilianRisk: 2 }, // tank won't fire main gun if more civilians in blast
   supply: { breachRadius: 25 }, // a zombie this close to the evac point cuts the supply
   abilities: {
     gas: { cost: 200, cooldown: 25, radius: 30, duration: 10 },

@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+declare const process: { env: Record<string, string | undefined> }; // node globals, without @types/node
 
 export default defineConfig({
   testDir: 'e2e',

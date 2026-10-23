@@ -17,6 +17,7 @@ function unlocked(i: number): boolean {
 }
 
 function showMenu(): void {
+  window.onkeydown = null;
   game?.destroy();
   game = null;
   $('game').classList.add('hidden');
@@ -44,6 +45,10 @@ function showMenu(): void {
   m.innerHTML = `<div class="wrap">
     <div class="logo"><img src="./icon.svg" alt="" /><div><h1>Zombie <span>Fuckers</span></h1><div class="sub">Нью-Йорк · Мидтаун · 40.755° N 73.984° W</div></div></div>
     <p class="lead">Сдерживание орды на реальной карте Мидтауна: 4894 здания из OpenStreetMap с настоящей высотой. Изучите очаг, займите крыши снайперами, перекройте улицы, разверните safe zone и эвакуацию — и спасите как можно больше людей.</p>
+    <h2>Режим</h2>
+    <div class="card toggle"><div class="info"><b style="font-size:15px">Бесконечные патроны</b>
+      <p>Магазины не кончаются нигде, safe zone нужна только для людей и спецзданий. Забеги отмечаются в топе знаком ∞.</p></div>
+      <button class="switch ${progress.infiniteAmmo ? 'on' : ''}" id="sw-ammo" aria-pressed="${progress.infiniteAmmo}" aria-label="Бесконечные патроны"></button></div>
     <h2>Миссии</h2>${missions}
     ${topTable()}
     <h2>Усиления · медалей: ${medals(progress)}</h2>
@@ -51,6 +56,11 @@ function showMenu(): void {
     ${ups}
     <p class="lead" style="font-size:12px;margin-top:24px">Карта: © OpenStreetMap contributors (ODbL). Вдохновлено игрой «Zombies Aren't Real» (Jogamedev); это независимая реконструкция механик, без чужих ассетов и кода.</p>
   </div>`;
+  $('sw-ammo').onclick = () => {
+    progress.infiniteAmmo = !progress.infiniteAmmo;
+    saveProgress(progress);
+    showMenu();
+  };
   m.querySelectorAll<HTMLButtonElement>('[data-play]').forEach((b) => (b.onclick = () => play(MISSIONS[Number(b.dataset.play)])));
   m.querySelectorAll<HTMLButtonElement>('[data-up]').forEach(
     (b) =>
@@ -70,7 +80,7 @@ function play(ms: Mission): void {
   $('menu').classList.add('hidden');
   $('modal').classList.add('hidden');
   $('game').classList.remove('hidden');
-  game = new Game(map, grid, ms, progress.upgrades, (r) => showResult(ms, r), showMenu);
+  game = new Game(map, grid, ms, progress.upgrades, progress.infiniteAmmo, (r) => showResult(ms, r), showMenu);
   (window as unknown as { __zf: Game }).__zf = game; // handle for automated checks
 }
 
@@ -80,7 +90,7 @@ function topTable(): string {
   const rows = progress.runs
     .map(
       (r, i) =>
-        `<tr><td>${i + 1}</td><td>${title(r.mission)}</td><td class="num">${r.evacuated.toLocaleString('ru-RU')}</td><td class="num">${r.savedPct}%</td><td>${r.won ? 'победа' : 'провал'}</td><td class="num">${r.date}</td></tr>`,
+        `<tr><td>${i + 1}</td><td>${title(r.mission)}${r.infinite ? ' ∞' : ''}</td><td class="num">${r.evacuated.toLocaleString('ru-RU')}</td><td class="num">${r.savedPct}%</td><td>${r.won ? 'победа' : 'провал'}</td><td class="num">${r.date}</td></tr>`,
     )
     .join('');
   return `<h2>Ваш топ · по эвакуированным</h2><div class="top"><table><thead><tr><th>#</th><th>Миссия</th><th>Вывезено</th><th>Спасено</th><th>Итог</th><th>Дата</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -98,6 +108,7 @@ function showResult(ms: Mission, r: GameResult): void {
     savedPct: pct,
     won: r.won,
     kills: w.stats.zombiesKilled,
+    infinite: w.infiniteAmmo,
   });
   saveProgress(progress);
   const badges = [
@@ -110,7 +121,7 @@ function showResult(ms: Mission, r: GameResult): void {
   const modal = $('modal');
   const KILL_NAMES: Record<string, string> = {
     sniper: 'Снайперы', garrison: 'Штурмовики', turret: 'Турели', mortar: 'Миномёты', heli: 'Вертолёты',
-    mines: 'Мины', spikes: 'Шипы', airstrike: 'Авиаудары', fire: 'Напалм', recruits: 'Рекруты и десант',
+    mines: 'Мины', spikes: 'Шипы', tank: 'Танки', bmp: 'БМП', airstrike: 'Авиаудары', fire: 'Напалм', recruits: 'Рекруты и десант',
   };
   const kills = Object.entries(w.killsBy)
     .sort((a, b) => b[1] - a[1])

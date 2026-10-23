@@ -203,7 +203,7 @@ export class MapLayer {
   private view(cam: Camera): View {
     const cached = this.views.get(cam.deg);
     if (cached) return cached;
-    if (this.views.size > 8) this.views.clear();
+    if (this.views.size >= 24) this.views.delete(this.views.keys().next().value!); // oldest angle out
     const [dx, dy] = cam.down(); // world direction facing the viewer
     const paths = new Map<Footprint, { lit: Path2D; dark: Path2D; roof: Path2D }>();
     const key = new Map<Footprint, number>();
@@ -291,8 +291,9 @@ export class MapLayer {
     ctx.fill(this.treeLight);
 
     const v = this.view(cam);
-    ctx.lineWidth = Math.max(0.35, 0.9 * px);
-    ctx.strokeStyle = 'rgba(35,26,14,0.75)';
+    ctx.lineWidth = Math.max(0.3, 0.8 * px);
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(48,36,22,0.5)'; // soft outline: buildings read apart without hard ink lines
     for (const f of v.order) {
       if (f.x1 < vx0 || f.x0 > vx1 || f.y1 < vy0 || f.y0 > vy1) continue;
       const p = v.paths.get(f)!;
@@ -327,18 +328,18 @@ export class MapLayer {
   }
 
   /** Paints the building at (x, y) in a unit's colour, the way the original marks garrisons. */
-  highlight(ctx: CanvasRenderingContext2D, cam: Camera, dpr: number, x: number, y: number, color: string): void {
+  highlight(ctx: CanvasRenderingContext2D, cam: Camera, dpr: number, x: number, y: number, color: string, strength = 1): void {
     const f = this.footprintAt(x, y);
     if (!f) return;
     const p = this.view(cam).paths.get(f)!;
     ctx.setTransform(...cam.matrix(dpr));
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.55 * strength;
     ctx.fillStyle = color;
     ctx.fill(p.dark);
     ctx.fill(p.lit);
-    ctx.globalAlpha = 0.75;
+    ctx.globalAlpha = 0.75 * strength;
     ctx.fill(p.roof);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = strength;
     ctx.strokeStyle = color;
     ctx.lineWidth = 2 / cam.zoom;
     ctx.stroke(p.roof);
