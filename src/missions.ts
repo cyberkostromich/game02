@@ -41,7 +41,7 @@ export const MISSIONS: Mission[] = [
     population: 22000,
     budget: 3200,
     seed: 37,
-    outbreak: [{ at: 'Grand Central', n: 10, infected: 90, r: 120 }],
+    outbreak: [{ at: 'Grand Central', n: 10, infected: 70, r: 120 }],
     crowds: [{ at: 'Grand Central', n: 2500, r: 150 }],
   },
   {
@@ -49,11 +49,11 @@ export const MISSIONS: Mission[] = [
     title: 'Два фронта',
     brief: 'Почти одновременно — Брайант-парк и Эмпайр-стейт-билдинг. Ресурсов на две полноценные линии обороны не хватит.',
     population: 26000,
-    budget: 4000,
+    budget: 3800,
     seed: 41,
     outbreak: [
-      { at: 'Брайант-парк', n: 8, infected: 60, r: 100 },
-      { at: 'Эмпайр-стейт-билдинг', n: 8, infected: 60, r: 100 },
+      { at: 'Брайант-парк', n: 10, infected: 90, r: 110 },
+      { at: 'Эмпайр-стейт-билдинг', n: 10, infected: 90, r: 110 },
     ],
   },
   {

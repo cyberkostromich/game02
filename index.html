@@ -71,6 +71,12 @@
       .retreat { background: var(--panel); border: 1px solid rgba(255,90,79,.4); color: #ffb3ad; border-radius: 9px; padding: 6px 8px; font-size: 12px; }
       .sel { position: absolute; right: 10px; top: calc(56px + env(safe-area-inset-top)); width: 210px; }
       .sel button { margin-top: 6px; width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px; }
+      @media (max-width: 640px) {
+        .row { flex-direction: column-reverse; align-items: stretch; gap: 4px; }
+        .side { flex-direction: row; justify-content: flex-end; align-items: center; }
+        .side .go { flex: 1; }
+        .tool { min-width: 66px; padding: 5px 6px; }
+      }
       .attrib { position: absolute; left: 8px; bottom: 2px; font-size: 9.5px; color: rgba(255,255,255,.35); pointer-events: none; }
 
       .screen { position: fixed; inset: 0; overflow-y: auto; background: radial-gradient(1200px 600px at 70% -10%, #1d2a1a 0%, transparent 60%), var(--bg);

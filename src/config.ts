@@ -1,9 +1,9 @@
 // All gameplay numbers live here. Distances in metres, time in seconds.
 export const CFG = {
   sim: {
-    hz: 15,
+    hz: 10,
     cell: 4, // walk-grid cell size
-    fieldEvery: 0.45, // prey + zombie fields, recomputed on alternating ticks
+    fieldEvery: 0.7, // prey + zombie fields, recomputed on alternating ticks
     evacFieldEvery: 1.5,
     hashCell: 8,
   },

@@ -295,7 +295,7 @@ export class World {
     if (this.zomT <= 0) {
       // zombie proximity: drives civilian panic and bounds the prey search
       this.zomT = s.fieldEvery;
-      this.preyT = s.fieldEvery / 2;
+      this.preyT = Math.min(this.preyT, s.fieldEvery / 2); // keep the two solves on different ticks
       let k = 0;
       for (let i = 0; i < this.n; i++) if (this.kind[i] === ZOMBIE) src[k++] = g.idx(this.x[i], this.y[i]);
       this.solver.solve(src, k, this.zombieField, { cap: Math.ceil((CFG.zombie.senseRadius / g.cell) * 2) });
