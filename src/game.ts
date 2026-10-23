@@ -6,7 +6,7 @@ import { starsFor } from './progress';
 import { AgentRenderer } from './render/agents';
 import { Camera } from './render/camera';
 import { LEAN, MapLayer, MAX_VISUAL_H } from './render/mapLayer';
-import { drawGround, drawRange, drawTop, rangeOf, UNIT_COLOR, unitScreen, ZONE_FILL, ZONE_LINE } from './render/overlay';
+import { drawGround, drawRange, drawTop, rangeOf, stragglers, UNIT_COLOR, unitScreen, ZONE_FILL, ZONE_LINE } from './render/overlay';
 import { abilityReady, useAbility } from './sim/abilities';
 import { BUILDING, type Grid, type MapData } from './sim/grid';
 import { zoneCost, zoneFromDrag } from './sim/support';
@@ -460,6 +460,7 @@ export class Game {
     this.el('speed').classList.add('hidden');
     this.el('btn-retreat').classList.add('hidden');
     this.el('btn-start').onclick = () => this.start();
+    this.el('btn-hunt').onclick = () => this.huntNext();
     this.el('btn-refund').onclick = () => this.refundAll();
     this.el('btn-menu').onclick = () => this.onQuit();
     this.el('btn-rotl').onclick = () => this.rotate(-30);
@@ -510,6 +511,19 @@ export class Game {
     );
   }
 
+  private huntIndex = 0;
+
+  /** Jumps the camera to the next group of the last zombies. */
+  private huntNext(): void {
+    const groups = stragglers(this.world).sort((a, b) => b.n - a.n);
+    if (!groups.length) return;
+    const g = groups[this.huntIndex++ % groups.length];
+    this.cam.x = g.x;
+    this.cam.y = g.y;
+    this.cam.zoom = Math.max(this.cam.zoom, 1);
+    sound.ui('click');
+  }
+
   /** Short message at the top of the screen. */
   private toast(text: string, kind: 'good' | 'bad' = 'bad'): void {
     const box = this.el('toasts');
@@ -552,6 +566,9 @@ export class Game {
       b.disabled = w.budget < toolCost(t) || (!!def.battleOnly && w.phase !== 'battle') || cd > 0;
       b.querySelector('.cost')!.textContent = cd > 0 ? `${Math.ceil(cd)} с` : costLabel(t);
     });
+    const few = w.phase === 'battle' && w.counts.zombie > 0 && w.counts.zombie <= 60;
+    this.el('btn-hunt').classList.toggle('hidden', !few);
+    if (few) this.el('btn-hunt').textContent = `К зомби · осталось ${w.counts.zombie}`;
     const chip = this.el('toolchip');
     const active = ALL_TOOLS.find((d) => d.id === this.tool);
     chip.classList.toggle('hidden', !active);

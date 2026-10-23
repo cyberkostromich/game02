@@ -41,7 +41,7 @@ describe('unit levels and supply', () => {
     w.spawn(ZOMBIE, 60, 200); // keep the battle running
     run(w, 0.2);
     expect(far.ammo).toBe(0);
-    expect(near.ammo).toBe(30);
+    expect(near.ammo).toBe(40);
   });
 });
 
@@ -163,7 +163,7 @@ describe('merged safe zones', () => {
     w.spawn(ZOMBIE, 20, 20);
     run(w, 30);
     expect(w.zoneMask[w.grid.idx(w.x[civ], w.y[civ])]).toBe(1);
-    expect(u.ammo).toBe(300);
+    expect(u.ammo).toBe(400);
   });
 });
 
@@ -268,7 +268,7 @@ describe('round 3 fixes', () => {
     for (let k = 0; k < 5; k++) w.spawn(ZOMBIE, 200 + k * 3, 150);
     run(w, 6);
     expect(u.kills).toBeGreaterThan(0);
-    expect(u.ammo).toBe(30);
+    expect(u.ammo).toBe(40);
   });
 });
 
@@ -311,5 +311,19 @@ describe('review regressions', () => {
       w.tick(0.1);
       expect(Math.max(...w.crowd)).toBeLessThan(1000);
     }
+  });
+});
+
+describe('stragglers', () => {
+  it('groups the last zombies so the player can find them', async () => {
+    const { stragglers } = await import('../src/render/overlay');
+    const w = arena(800);
+    w.startBattle();
+    w.spawn(ZOMBIE, 100, 100);
+    w.spawn(ZOMBIE, 110, 105);
+    w.spawn(ZOMBIE, 700, 700);
+    w.recount();
+    const g = stragglers(w).sort((a, b) => b.n - a.n);
+    expect(g.map((q) => q.n)).toEqual([2, 1]);
   });
 });

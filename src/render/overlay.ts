@@ -508,4 +508,56 @@ export function drawTop(
   w.moveMarks = w.moveMarks.filter((m) => m.t > 0);
 
   for (const u of w.units) drawUnit(ctx, u, cam, now / 1000, u.id === selectedId);
+  drawStragglers(ctx, w, cam);
+}
+
+/** Last zombies standing, grouped by 150 m blocks: centre and size of each group. */
+export function stragglers(w: World): { x: number; y: number; n: number }[] {
+  if (w.phase !== 'battle' || w.counts.zombie === 0 || w.counts.zombie > 60) return [];
+  const groups = new Map<string, { x: number; y: number; n: number }>();
+  for (let i = 0; i < w.n; i++) {
+    if (w.kind[i] !== 3) continue;
+    const k = `${Math.floor(w.x[i] / 150)},${Math.floor(w.y[i] / 150)}`;
+    const g = groups.get(k) ?? { x: 0, y: 0, n: 0 };
+    g.x += w.x[i];
+    g.y += w.y[i];
+    g.n++;
+    groups.set(k, g);
+  }
+  return [...groups.values()].map((g) => ({ x: g.x / g.n, y: g.y / g.n, n: g.n }));
+}
+
+/** When few zombies remain, arrows on the screen edge point to the off-screen groups. */
+function drawStragglers(ctx: CanvasRenderingContext2D, w: World, cam: Camera): void {
+  const pad = 46;
+  for (const g of stragglers(w)) {
+    const [sx, sy] = cam.toScreen(g.x, g.y);
+    if (sx > pad && sy > pad && sx < cam.vw - pad && sy < cam.vh - pad) continue;
+    const cx = cam.vw / 2;
+    const cy = cam.vh / 2;
+    const a = Math.atan2(sy - cy, sx - cx);
+    const k = Math.min((cam.vw / 2 - pad) / Math.abs(Math.cos(a) || 1e-6), (cam.vh / 2 - pad) / Math.abs(Math.sin(a) || 1e-6));
+    const ex = cx + Math.cos(a) * k;
+    const ey = cy + Math.sin(a) * k;
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.fillStyle = 'rgba(20,26,40,0.85)';
+    ctx.beginPath();
+    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.rotate(a);
+    ctx.fillStyle = '#8dff6a';
+    ctx.beginPath();
+    ctx.moveTo(22, 0);
+    ctx.lineTo(12, -7);
+    ctx.lineTo(12, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.rotate(-a);
+    ctx.font = '700 11px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(g.n), 0, 0);
+    ctx.restore();
+  }
 }

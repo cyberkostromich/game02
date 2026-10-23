@@ -10,15 +10,15 @@ export const CFG = {
   civilian: {
     walk: 1.2,
     run: 2.3,
-    panicRadius: 24, // sees a zombie within this distance -> runs
+    panicRadius: 30, // sees a zombie within this distance -> runs
     speedSpread: [0.7, 1.2], // per-person speed factor
     turnChance: 0.04, // per tick, while wandering
   },
   zombie: {
-    speedMin: 1.6,
-    speedMax: 3.4,
-    runnerShare: 0.12, // fast zombies
-    runnerSpeed: 4.6,
+    speedMin: 1.3,
+    speedMax: 2.8,
+    runnerShare: 0.08, // fast zombies
+    runnerSpeed: 4.2,
     senseRadius: 140, // zombies only track prey this close; further away they wander
     biteRange: 1.8,
     biteCooldown: 1.2,
@@ -31,7 +31,7 @@ export const CFG = {
   },
   outbreak: {
     exclusion: 160, // no deployments this close to an outbreak during planning
-    incubationMax: 35, // hidden carriers turn within this many seconds of the start
+    incubationMax: 20, // hidden carriers turn within this many seconds of the start
   },
   bounty: 5, // $ per zombie killed, paid during the battle
   lostBelow: 0.1, // the city is lost once fewer than this share can still be saved
@@ -40,10 +40,10 @@ export const CFG = {
   mortarCivilianRatio: 0.34,
   units: {
     // magazine: shots carried; refilled only inside an intact safe zone
-    sniper: { cost: 200, hp: 30, range: 190, reload: 1.8, accuracy: 0.88, magazine: 30 },
-    turret: { cost: 300, hp: 240, range: 75, reload: 0.2, accuracy: 0.45, magazine: 300 },
-    mortar: { cost: 450, hp: 50, rangeMin: 50, range: 340, reload: 3.2, blast: 12, flight: 1.8, magazine: 14 },
-    garrison: { cost: 150, hp: 320, range: 85, reload: 0.35, accuracy: 0.6, magazine: 240 }, // assault squad: street or building
+    sniper: { cost: 200, hp: 40, range: 190, reload: 1.4, accuracy: 0.9, magazine: 40 },
+    turret: { cost: 300, hp: 300, range: 80, reload: 0.2, accuracy: 0.55, magazine: 400 },
+    mortar: { cost: 450, hp: 60, rangeMin: 50, range: 340, reload: 2.6, blast: 13, flight: 1.6, magazine: 20 },
+    garrison: { cost: 150, hp: 360, range: 85, reload: 0.3, accuracy: 0.62, magazine: 300 }, // assault squad: street or building
     mines: { cost: 200, hp: 1, radius: 10, blast: 4, charges: 12, reload: 0.4 },
     evac: { cost: 250, hp: 120, radius: 300, rate: 10, pickup: 12 }, // pickup: m around the point
     heli: { cost: 650, hp: 1, range: 80, reload: 0.08, accuracy: 0.45, speed: 28, duration: 70 },

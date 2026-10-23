@@ -16,7 +16,7 @@ test('menu → mission → deploy → outbreak runs without errors', async ({ pa
   const box = (await page.locator('#top').boundingBox())!;
   await page.mouse.click(box.width / 2, box.height / 2);
   await expect(page.locator('#hint')).toContainText('зону очага');
-  await expect(page.locator('#stats .money')).toHaveText('$3 600');
+  await expect(page.locator('#stats .money')).toHaveText('$4 500');
 
   await page.click('#btn-start');
   await page.click('[data-s="4"]');
