@@ -1,0 +1,21 @@
+{
+  "name": "zombies-nyc",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "map:build": "node tools/build-map.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "typescript": "5.9",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7"
+  }
+}

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1014" />
+    <title>Карантин: Нью-Йорк</title>
+    <style>
+      :root {
+        --bg: #0d1014;
+        --panel: rgba(16, 20, 26, 0.92);
+        --panel-2: #1a2029;
+        --line: rgba(255, 255, 255, 0.09);
+        --text: #e6e9ee;
+        --muted: #8b95a5;
+        --accent: #7dff4a;
+        --blue: #5fb4ff;
+        --danger: #ff5a4f;
+        --gold: #ffc94a;
+      }
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+        font: 14px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; user-select: none; -webkit-user-select: none; }
+      button { font: inherit; color: inherit; cursor: pointer; }
+      .num { font-variant-numeric: tabular-nums; }
+      .hidden { display: none !important; }
+
+      #game { position: fixed; inset: 0; }
+      #game canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      #top { touch-action: none; }
+
+      .hud-top { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 8px; align-items: flex-start;
+        padding: calc(8px + env(safe-area-inset-top)) 10px 0; pointer-events: none; }
+      .hud-top > * { pointer-events: auto; }
+      .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; backdrop-filter: blur(6px); }
+      .icon-btn { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: 38px; height: 38px; display: grid; place-items: center; font-size: 18px; }
+      .title { flex: 1; min-width: 0; }
+      .title b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .title small { color: var(--muted); }
+      .budget { font-weight: 700; color: var(--gold); font-size: 16px; }
+      .counts { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 10px; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+      .counts .chip { padding: 4px 8px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+      .hud-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 8px calc(8px + env(safe-area-inset-bottom)); pointer-events: none; }
+      .hud-bottom > * { pointer-events: auto; }
+      .hint { margin: 0 auto 6px; max-width: 640px; font-size: 12.5px; color: #cfd6e0; text-align: center; padding: 6px 10px; }
+      .row { display: flex; gap: 8px; align-items: flex-end; }
+      .tools { flex: 1; display: flex; gap: 6px; overflow-x: auto; padding: 4px 2px; scrollbar-width: none; }
+      .tools::-webkit-scrollbar { display: none; }
+      .tool { flex: 0 0 auto; min-width: 74px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; text-align: center; }
+      .tool .ico { width: 18px; height: 18px; margin: 0 auto 3px; }
+      .tool .nm { font-size: 12px; font-weight: 600; }
+      .tool .cost { font-size: 11px; color: var(--gold); }
+      .tool.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+      .tool:disabled { opacity: 0.38; }
+      .side { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+      .speed { display: flex; gap: 4px; }
+      .speed button { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; font-size: 13px; }
+      .speed button.on { border-color: var(--blue); color: var(--blue); }
+      .go { background: var(--accent); color: #0b1a05; border: 0; border-radius: 12px; padding: 12px 16px; font-weight: 800; font-size: 15px; letter-spacing: .02em; }
+      .retreat { background: var(--panel); border: 1px solid rgba(255,90,79,.4); color: #ffb3ad; border-radius: 9px; padding: 6px 8px; font-size: 12px; }
+      .sel { position: absolute; right: 10px; top: calc(56px + env(safe-area-inset-top)); width: 210px; }
+      .sel button { margin-top: 6px; width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px; }
+      .attrib { position: absolute; left: 8px; bottom: 2px; font-size: 9.5px; color: rgba(255,255,255,.35); pointer-events: none; }
+
+      .screen { position: fixed; inset: 0; overflow-y: auto; background: radial-gradient(1200px 600px at 70% -10%, #1d2a1a 0%, transparent 60%), var(--bg); padding: calc(20px + env(safe-area-inset-top)) 16px 24px; }
+      .wrap { max-width: 760px; margin: 0 auto; }
+      h1 { font-size: 30px; margin: 4px 0 2px; letter-spacing: -.01em; }
+      h1 span { color: var(--accent); }
+      h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 26px 0 10px; }
+      .lead { color: #b9c2cf; margin: 6px 0 0; }
+      .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 10px; display: flex; gap: 12px; align-items: center; }
+      .card .info { flex: 1; min-width: 0; }
+      .card b { font-size: 16px; }
+      .card p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+      .card .meta { font-size: 12px; color: #9fb0c4; margin-top: 6px; }
+      .stars { color: var(--gold); letter-spacing: 2px; white-space: nowrap; }
+      .stars .off { color: #3a4250; }
+      .btn { background: var(--accent); color: #0b1a05; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; }
+      .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+      .btn:disabled { opacity: .35; }
+      .locked { opacity: .5; }
+
+      .modal { position: fixed; inset: 0; background: rgba(5,7,10,.72); display: grid; place-items: center; padding: 16px; }
+      .modal .box { background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px; padding: 20px; width: min(420px, 100%); }
+      .modal h3 { margin: 0 0 4px; font-size: 22px; }
+      .big-stars { font-size: 34px; margin: 6px 0 10px; }
+      .stat { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+      .actions { display: flex; gap: 8px; margin-top: 16px; }
+      .actions .btn { flex: 1; }
+      .loading { position: fixed; inset: 0; display: grid; place-items: center; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <div id="loading" class="loading">Загрузка карты Манхэттена…</div>
+    <div id="menu" class="screen hidden"></div>
+    <div id="game" class="hidden">
+      <canvas id="map"></canvas>
+      <canvas id="agents"></canvas>
+      <canvas id="top"></canvas>
+      <div class="hud-top">
+        <button class="icon-btn" id="btn-menu" title="К миссиям">☰</button>
+        <div class="chip title"><b id="m-title"></b><small id="m-phase"></small></div>
+        <div class="chip budget num" id="budget"></div>
+      </div>
+      <div class="counts">
+        <div class="chip"><span class="dot" style="background:#ede8d8"></span><span class="num" id="c-civ"></span></div>
+        <div class="chip"><span class="dot" style="background:#7dff4a"></span><span class="num" id="c-zom"></span></div>
+        <div class="chip"><span class="dot" style="background:#d9eda0"></span><span class="num" id="c-inf"></span></div>
+        <div class="chip"><span class="dot" style="background:#3fe0c8"></span><span class="num" id="c-evac"></span></div>
+        <div class="chip hidden"><span class="dot" style="background:#73b8ff"></span><span class="num" id="c-rec"></span></div>
+      </div>
+      <div class="chip sel hidden" id="sel"></div>
+      <div class="hud-bottom">
+        <div class="chip hint" id="hint"></div>
+        <div class="row">
+          <div class="tools" id="tools"></div>
+          <div class="side">
+            <button class="go" id="btn-start">НАЧАТЬ</button>
+            <div class="speed hidden" id="speed">
+              <button data-s="0">❚❚</button><button data-s="1" class="on">1×</button><button data-s="2">2×</button><button data-s="4">4×</button>
+            </div>
+            <button class="retreat hidden" id="btn-retreat">Отступить</button>
+          </div>
+        </div>
+      </div>
+      <div class="attrib">© OpenStreetMap contributors</div>
+    </div>
+    <div id="modal" class="modal hidden"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
